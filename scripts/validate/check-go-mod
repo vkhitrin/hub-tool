@@ -2,17 +2,17 @@
 
 set -eu
 
-go mod tidy
-DIFF=$(git status --porcelain -- go.mod go.sum)
+TMPDIR="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR"' EXIT
+cp go.mod "$TMPDIR/go.mod"
+cp go.sum "$TMPDIR/go.sum"
 
-if [ "$DIFF" ]; then
+go mod tidy
+
+if ! diff -u "$TMPDIR/go.mod" go.mod || ! diff -u "$TMPDIR/go.sum" go.sum; then
     echo
-    echo "These files were changed:"
-    echo
-    echo "$DIFF"
-    echo
-    git diff go.mod go.sum
+    echo "go.mod or go.sum is not tidy"
     exit 1
 else
     echo "go.mod is correct"
-fi;
+fi

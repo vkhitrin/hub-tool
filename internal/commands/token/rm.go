@@ -17,9 +17,8 @@
 package token
 
 import (
-	"bufio"
+	"context"
 	"fmt"
-	"strings"
 
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
@@ -27,7 +26,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/docker/hub-tool/internal/ansi"
-	"github.com/docker/hub-tool/internal/metrics"
+	"github.com/docker/hub-tool/internal/commands/commandutil"
 	"github.com/docker/hub-tool/pkg/hub"
 )
 
@@ -41,49 +40,48 @@ type removeOptions struct {
 
 func newRmCmd(streams command.Streams, hubClient *hub.Client, parent string) *cobra.Command {
 	var opts removeOptions
-	cmd := &cobra.Command{
-		Use:                   removeNAme + " [OPTIONS] TOKEN_UUID",
-		Short:                 "Delete a Personal Access Token",
-		Args:                  cli.ExactArgs(1),
-		DisableFlagsInUseLine: true,
-		Annotations: map[string]string{
-			"sudo": "true",
+	return commandutil.NewForceCommand(commandutil.CommandConfig{
+		Use:         removeNAme + " [OPTIONS] TOKEN_UUID",
+		Short:       "Delete a Personal Access Token",
+		Args:        cli.ExactArgs(1),
+		Annotations: commandutil.SudoAnnotation(),
+		Parent:      parent,
+		Name:        removeNAme,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runRemove(cmd.Context(), streams, hubClient, opts, args[0])
 		},
-		PreRun: func(cmd *cobra.Command, args []string) {
-			metrics.Send(parent, removeNAme)
-		},
-		RunE: func(_ *cobra.Command, args []string) error {
-			return runRemove(streams, hubClient, opts, args[0])
-		},
-	}
-	cmd.Flags().BoolVarP(&opts.force, "force", "f", false, "Force deletion of the tag")
-	return cmd
+	}, &opts.force, "Force deletion of the tag")
 }
 
-func runRemove(streams command.Streams, hubClient *hub.Client, opts removeOptions, tokenUUID string) error {
+func runRemove(ctx context.Context, streams command.Streams, hubClient *hub.Client, opts removeOptions, tokenUUID string) error {
 	u, err := uuid.Parse(tokenUUID)
 	if err != nil {
 		return err
 	}
 
 	if !opts.force {
-
-		fmt.Fprintf(streams.Out(), ansi.Warn("WARNING: This action is irreversible.")+`
+		_, err := fmt.Fprintf(streams.Out(), ansi.Warn("WARNING: This action is irreversible.")+`
 By confirming, you will permanently delete the access token.
 Removing the tokens will invalidate your credentials on all Docker clients currently authenticated with the tokens.
 
 Please type your username %q to confirm token deletion: `, hubClient.AuthConfig.Username)
-		reader := bufio.NewReader(streams.In())
-		input, _ := reader.ReadString('\n')
-		input = strings.ToLower(strings.TrimSpace(input))
-		if input != hubClient.AuthConfig.Username {
-			return fmt.Errorf("%q differs from your username, deletion aborted", input)
+		if err != nil {
+			return err
 		}
+	}
+	err = commandutil.ConfirmUnlessForced(ctx, streams.In(), opts.force, commandutil.MatchConfirmation(
+		hubClient.AuthConfig.Username,
+		func(input string) error {
+			return fmt.Errorf("%q differs from your username, deletion aborted", input)
+		},
+	))
+	if err != nil {
+		return err
 	}
 
 	if err := hubClient.RemoveToken(u.String()); err != nil {
 		return err
 	}
-	fmt.Fprintln(streams.Out(), ansi.Emphasise("Access token deleted"), u)
-	return nil
+	_, err = fmt.Fprintln(streams.Out(), ansi.Emphasise("Access token deleted"), u)
+	return err
 }

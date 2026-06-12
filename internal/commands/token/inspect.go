@@ -29,8 +29,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/docker/hub-tool/internal/ansi"
+	"github.com/docker/hub-tool/internal/commands/commandutil"
 	"github.com/docker/hub-tool/internal/format"
-	"github.com/docker/hub-tool/internal/metrics"
 	"github.com/docker/hub-tool/pkg/hub"
 )
 
@@ -44,21 +44,17 @@ type inspectOptions struct {
 
 func newInspectCmd(streams command.Streams, hubClient *hub.Client, parent string) *cobra.Command {
 	var opts inspectOptions
-	cmd := &cobra.Command{
-		Use:                   inspectName + " [OPTIONS] TOKEN_UUID",
-		Short:                 "Inspect a Personal Access Token",
-		Args:                  cli.ExactArgs(1),
-		DisableFlagsInUseLine: true,
-		Annotations: map[string]string{
-			"sudo": "true",
-		},
-		PreRun: func(cmd *cobra.Command, args []string) {
-			metrics.Send(parent, inspectName)
-		},
+	cmd := commandutil.NewCommand(commandutil.CommandConfig{
+		Use:         inspectName + " [OPTIONS] TOKEN_UUID",
+		Short:       "Inspect a Personal Access Token",
+		Args:        cli.ExactArgs(1),
+		Annotations: commandutil.SudoAnnotation(),
+		Parent:      parent,
+		Name:        inspectName,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runInspect(streams, hubClient, opts, args[0])
 		},
-	}
+	})
 	opts.AddFormatFlag(cmd.Flags())
 	return cmd
 }
@@ -78,18 +74,43 @@ func runInspect(streams command.Streams, hubClient *hub.Client, opts inspectOpti
 func printInspectToken(out io.Writer, value interface{}) error {
 	token := value.(*hub.Token)
 
-	fmt.Fprintf(out, ansi.Title("Token:")+"\n")
-	fmt.Fprintf(out, ansi.Key("UUID:")+"\t%s\n", token.UUID)
-	if token.Description != "" {
-		fmt.Fprintf(out, ansi.Key("Description:")+"\t%s\n", token.Description)
+	if err := writeString(out, ansi.Title("Token:")+"\n"); err != nil {
+		return err
 	}
-	fmt.Fprintf(out, ansi.Key("Is Active:")+"\t%v\n", token.IsActive)
-	fmt.Fprintf(out, ansi.Key("Created:")+"\t%s\n", fmt.Sprintf("%s ago", units.HumanDuration(time.Since(token.CreatedAt))))
-	fmt.Fprintf(out, ansi.Key("Last Used:")+"\t%s\n", getLastUsed(token.LastUsed))
-	fmt.Fprintf(out, ansi.Key("Creator User Agent:")+"\t%s\n", token.CreatorUA)
-	fmt.Fprintf(out, ansi.Key("Creator IP:")+"\t%s\n", token.CreatorIP)
-	fmt.Fprintf(out, ansi.Key("Generated:")+"\t%s\n", getGeneratedBy(token))
-	return nil
+	if err := writeLine(out, ansi.Key("UUID:")+"\t%s\n", token.UUID); err != nil {
+		return err
+	}
+	if token.Description != "" {
+		if err := writeLine(out, ansi.Key("Description:")+"\t%s\n", token.Description); err != nil {
+			return err
+		}
+	}
+	if err := writeLine(out, ansi.Key("Is Active:")+"\t%v\n", token.IsActive); err != nil {
+		return err
+	}
+	if err := writeLine(out, ansi.Key("Created:")+"\t%s ago\n", units.HumanDuration(time.Since(token.CreatedAt))); err != nil {
+		return err
+	}
+	if err := writeLine(out, ansi.Key("Last Used:")+"\t%s\n", getLastUsed(token.LastUsed)); err != nil {
+		return err
+	}
+	if err := writeLine(out, ansi.Key("Creator User Agent:")+"\t%s\n", token.CreatorUA); err != nil {
+		return err
+	}
+	if err := writeLine(out, ansi.Key("Creator IP:")+"\t%s\n", token.CreatorIP); err != nil {
+		return err
+	}
+	return writeLine(out, ansi.Key("Generated:")+"\t%s\n", getGeneratedBy(token))
+}
+
+func writeLine(out io.Writer, format string, args ...interface{}) error {
+	_, err := fmt.Fprintf(out, format, args...)
+	return err
+}
+
+func writeString(out io.Writer, value string) error {
+	_, err := fmt.Fprint(out, value)
+	return err
 }
 
 func getLastUsed(t time.Time) string {

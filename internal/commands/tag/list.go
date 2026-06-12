@@ -18,7 +18,6 @@ package tag
 
 import (
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
@@ -27,10 +26,7 @@ import (
 	"github.com/docker/go-units"
 	"github.com/spf13/cobra"
 
-	"github.com/docker/hub-tool/internal/ansi"
-	"github.com/docker/hub-tool/internal/format"
-	"github.com/docker/hub-tool/internal/format/tabwriter"
-	"github.com/docker/hub-tool/internal/metrics"
+	"github.com/docker/hub-tool/internal/commands/commandutil"
 	"github.com/docker/hub-tool/pkg/hub"
 )
 
@@ -39,53 +35,66 @@ const (
 )
 
 var (
-	defaultColumns = []column{
-		{"TAG", func(t hub.Tag) (string, int) { return t.Name, len(t.Name) }},
-		{"DIGEST", func(t hub.Tag) (string, int) {
-			if len(t.Images) > 0 {
-				return t.Images[0].Digest, len(t.Images[0].Digest)
-			}
-			return "", 0
-		}},
-		{"STATUS", func(t hub.Tag) (string, int) {
-			return t.Status, len(t.Status)
-		}},
-		{"LAST UPDATE", func(t hub.Tag) (string, int) {
-			if t.LastUpdated.Nanosecond() == 0 {
-				return "", 0
-			}
-			s := fmt.Sprintf("%s ago", units.HumanDuration(time.Since(t.LastUpdated)))
-			return s, len(s)
-		}},
-		{"LAST PUSHED", func(t hub.Tag) (string, int) {
-			if t.LastPushed.Nanosecond() == 0 {
-				return "", 0
-			}
-			s := units.HumanDuration(time.Since(t.LastPushed))
-			return s, len(s)
-		}},
-		{"LAST PULLED", func(t hub.Tag) (string, int) {
-			if t.LastPulled.Nanosecond() == 0 {
-				return "", 0
-			}
-			s := units.HumanDuration(time.Since(t.LastPulled))
-			return s, len(s)
-		}},
-		{"SIZE", func(t hub.Tag) (string, int) {
-			size := t.FullSize
-			if len(t.Images) > 0 {
-				size = 0
-				for _, image := range t.Images {
-					size += image.Size
+	defaultColumns = []commandutil.Column[hub.Tag]{
+		commandutil.TextColumn("TAG", func(t hub.Tag) string { return t.Name }),
+		{
+			Header: "DIGEST",
+			Value: func(t hub.Tag) (string, int) {
+				if len(t.Images) > 0 {
+					return t.Images[0].Digest, len(t.Images[0].Digest)
 				}
-			}
-			s := units.HumanSize(float64(size))
-			return s, len(s)
-		}},
+				return "", 0
+			},
+		},
+		commandutil.TextColumn("STATUS", func(t hub.Tag) string { return t.Status }),
+		{
+			Header: "LAST UPDATE",
+			Value: func(t hub.Tag) (string, int) {
+				if t.LastUpdated.Nanosecond() == 0 {
+					return "", 0
+				}
+				s := fmt.Sprintf("%s ago", units.HumanDuration(time.Since(t.LastUpdated)))
+				return s, len(s)
+			},
+		},
+		{
+			Header: "LAST PUSHED",
+			Value: func(t hub.Tag) (string, int) {
+				if t.LastPushed.Nanosecond() == 0 {
+					return "", 0
+				}
+				s := units.HumanDuration(time.Since(t.LastPushed))
+				return s, len(s)
+			},
+		},
+		{
+			Header: "LAST PULLED",
+			Value: func(t hub.Tag) (string, int) {
+				if t.LastPulled.Nanosecond() == 0 {
+					return "", 0
+				}
+				s := units.HumanDuration(time.Since(t.LastPulled))
+				return s, len(s)
+			},
+		},
+		{
+			Header: "SIZE",
+			Value: func(t hub.Tag) (string, int) {
+				size := t.FullSize
+				if len(t.Images) > 0 {
+					size = 0
+					for _, image := range t.Images {
+						size += image.Size
+					}
+				}
+				s := units.HumanSize(float64(size))
+				return s, len(s)
+			},
+		},
 	}
-	platformColumn = column{
-		"OS/ARCH",
-		func(t hub.Tag) (string, int) {
+	platformColumn = commandutil.Column[hub.Tag]{
+		Header: "OS/ARCH",
+		Value: func(t hub.Tag) (string, int) {
 			var platforms []string
 			for _, image := range t.Images {
 				platform := fmt.Sprintf("%s/%s", image.Os, image.Architecture)
@@ -100,35 +109,27 @@ var (
 	}
 )
 
-type column struct {
-	header string
-	value  func(t hub.Tag) (string, int)
-}
-
 type listOptions struct {
-	format.Option
+	commandutil.ListOptions
 	platforms bool
-	all       bool
 	sort      string
 }
 
 func newListCmd(streams command.Streams, hubClient *hub.Client, parent string) *cobra.Command {
 	var opts listOptions
-	cmd := &cobra.Command{
-		Use:                   lsName + " [OPTION] REPOSITORY",
-		Aliases:               []string{"list"},
-		Short:                 "List all the images in a repository",
-		Args:                  cli.ExactArgs(1),
-		DisableFlagsInUseLine: true,
-		PreRun: func(cmd *cobra.Command, args []string) {
-			metrics.Send(parent, lsName)
-		},
+	cmd := commandutil.NewCommand(commandutil.CommandConfig{
+		Use:     lsName + " [OPTION] REPOSITORY",
+		Aliases: []string{"list"},
+		Short:   "List all the images in a repository",
+		Args:    cli.ExactArgs(1),
+		Parent:  parent,
+		Name:    lsName,
 		RunE: func(_ *cobra.Command, args []string) error {
 			return runList(streams, hubClient, opts, args[0])
 		},
-	}
+	})
 	cmd.Flags().BoolVar(&opts.platforms, "platforms", false, "List all available platforms per tag")
-	cmd.Flags().BoolVar(&opts.all, "all", false, "Fetch all available tags")
+	cmd.Flags().BoolVar(&opts.All, "all", false, "Fetch all available tags")
 	cmd.Flags().StringVar(&opts.sort, "sort", "", "Sort tags by (updated|name)[=(asc|desc)] (e.g.: --sort updated or --sort name=desc)")
 	opts.AddFormatFlag(cmd.Flags())
 	return cmd
@@ -139,10 +140,8 @@ func runList(streams command.Streams, hubClient *hub.Client, opts listOptions, r
 	if err != nil {
 		return err
 	}
-	if opts.all {
-		if err := hubClient.Update(hub.WithAllElements()); err != nil {
-			return err
-		}
+	if err := commandutil.UpdateAllElements(hubClient, opts.All); err != nil {
+		return err
 	}
 
 	var reqOps []hub.RequestOp
@@ -155,39 +154,12 @@ func runList(streams command.Streams, hubClient *hub.Client, opts listOptions, r
 	}
 
 	if opts.platforms {
-		defaultColumns = append(defaultColumns, platformColumn)
+		columns := append([]commandutil.Column[hub.Tag]{}, defaultColumns...)
+		columns = append(columns, platformColumn)
+		return opts.Print(streams.Out(), tags, commandutil.PrettyTable(columns, total))
 	}
 
-	return opts.Print(streams.Out(), tags, printTags(total))
-}
-
-func printTags(total int) format.PrettyPrinter {
-	return func(out io.Writer, values interface{}) error {
-		tags := values.([]hub.Tag)
-		tw := tabwriter.New(out, "    ")
-		for _, column := range defaultColumns {
-			tw.Column(ansi.Header(column.header), len(column.header))
-		}
-
-		tw.Line()
-
-		for _, tag := range tags {
-			for _, column := range defaultColumns {
-				value, width := column.value(tag)
-				tw.Column(value, width)
-			}
-			tw.Line()
-		}
-		if err := tw.Flush(); err != nil {
-			return err
-		}
-
-		if len(tags) < total {
-			fmt.Fprintln(out, ansi.Info(fmt.Sprintf("%v/%v listed, use --all flag to show all", len(tags), total)))
-		}
-
-		return nil
-	}
+	return opts.Print(streams.Out(), tags, commandutil.PrettyTable(defaultColumns, total))
 }
 
 const (

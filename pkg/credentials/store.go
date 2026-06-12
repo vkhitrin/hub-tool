@@ -21,6 +21,7 @@ import (
 
 	dockercredentials "github.com/docker/cli/cli/config/credentials"
 	clitypes "github.com/docker/cli/cli/config/types"
+	"github.com/docker/hub-tool/pkg/hub"
 	"gopkg.in/square/go-jose.v2/jwt"
 )
 
@@ -48,6 +49,19 @@ type Auth struct {
 	// RefreshToken is used to refresh the token when
 	// it expires
 	RefreshToken string
+}
+
+// StoreLogin updates the Hub client token and persists login credentials.
+func StoreLogin(hubClient *hub.Client, store Store, username, password, token, refreshToken string) error {
+	if err := hubClient.Update(hub.WithHubToken(token)); err != nil {
+		return err
+	}
+	return store.Store(Auth{
+		Username:     username,
+		Password:     password,
+		Token:        token,
+		RefreshToken: refreshToken,
+	})
 }
 
 // TokenExpired returns true if the token is malformed or is expired,

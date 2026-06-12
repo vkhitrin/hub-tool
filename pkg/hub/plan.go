@@ -17,10 +17,9 @@
 package hub
 
 import (
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/url"
+
+	hubapi "github.com/docker/hub-tool/pkg/hub/api"
 )
 
 const (
@@ -51,42 +50,18 @@ type Limits struct {
 
 // GetHubPlan returns an account current Hub plan
 func (c *Client) GetHubPlan(accountID string) (*Plan, error) {
-	u, err := url.Parse(c.domain + fmt.Sprintf(HubPlanURL, accountID))
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest("GET", u.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-	response, err := c.doRequest(req, withHubToken(c.token))
-	if err != nil {
-		return nil, err
-	}
-	var hubResponse hubPlanResponse
-	if err := json.Unmarshal(response, &hubResponse); err != nil {
+	var hubResponse hubapi.HubPlan
+	if err := c.getJSON(c.domain+fmt.Sprintf(HubPlanURL, accountID), &hubResponse); err != nil {
 		return nil, err
 	}
 	return &Plan{
-		Name: hubResponse.Name,
+		Name: ptrValue(hubResponse.Name),
 		Limits: Limits{
-			Seats:          hubResponse.Seats,
-			PrivateRepos:   hubResponse.PrivateRepos,
-			Teams:          hubResponse.Teams,
-			Collaborators:  hubResponse.Collaborators,
-			ParallelBuilds: hubResponse.ParallelBuilds,
+			Seats:          ptrValue(hubResponse.Seats),
+			PrivateRepos:   ptrValue(hubResponse.PrivateRepos),
+			Teams:          ptrValue(hubResponse.Teams),
+			Collaborators:  ptrValue(hubResponse.Collaborators),
+			ParallelBuilds: ptrValue(hubResponse.ParallelBuilds),
 		},
 	}, nil
-}
-
-type hubPlanResponse struct {
-	Name           string `json:"name"`
-	Legacy         bool   `json:"legacy"`
-	Seats          int    `json:"seats"`
-	PrivateRepos   int    `json:"private_repos"`
-	Teams          int    `json:"teams"`
-	Collaborators  int    `json:"collaborators"`
-	ParallelBuilds int    `json:"parallel_builds"`
-	Duration       string `json:"duration"`
 }

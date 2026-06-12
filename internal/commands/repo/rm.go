@@ -17,14 +17,11 @@
 package repo
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"strings"
 
 	"github.com/pkg/errors"
-
-	"github.com/docker/hub-tool/internal/errdef"
 
 	"github.com/distribution/reference"
 	"github.com/docker/cli/cli"
@@ -32,7 +29,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/docker/hub-tool/internal/ansi"
-	"github.com/docker/hub-tool/internal/metrics"
+	"github.com/docker/hub-tool/internal/commands/commandutil"
 	"github.com/docker/hub-tool/pkg/hub"
 )
 
@@ -46,24 +43,17 @@ type rmOptions struct {
 
 func newRmCmd(streams command.Streams, hubClient *hub.Client, parent string) *cobra.Command {
 	var opts rmOptions
-	cmd := &cobra.Command{
-		Use:                   rmName + " [OPTIONS] NAMESPACE/REPOSITORY",
-		Short:                 "Delete a repository",
-		Args:                  cli.ExactArgs(1),
-		DisableFlagsInUseLine: true,
-		PreRun: func(cmd *cobra.Command, args []string) {
-			metrics.Send(parent, rmName)
-		},
+	return commandutil.NewForceCommand(commandutil.CommandConfig{
+		Use:    rmName + " [OPTIONS] NAMESPACE/REPOSITORY",
+		Short:  "Delete a repository",
+		Args:   cli.ExactArgs(1),
+		Parent: parent,
+		Name:   rmName,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			err := runRm(cmd.Context(), streams, hubClient, opts, args[0])
-			if err == nil || errors.Is(err, errdef.ErrCanceled) {
-				return nil
-			}
-			return err
+			return commandutil.IgnoreCanceled(err)
 		},
-	}
-	cmd.Flags().BoolVarP(&opts.force, "force", "f", false, "Force deletion of the repository")
-	return cmd
+	}, &opts.force, "Force deletion of the repository")
 }
 
 func runRm(ctx context.Context, streams command.Streams, hubClient *hub.Client, opts rmOptions, repository string) error {
@@ -85,24 +75,24 @@ func runRm(ctx context.Context, streams command.Streams, hubClient *hub.Client, 
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(streams.Out(), ansi.Warn(fmt.Sprintf("WARNING: You are about to permanently delete repository %q including %d tag(s)", namedRef.Name(), count)))
-		fmt.Fprintln(streams.Out(), ansi.Warn("         This action is irreversible"))
-		fmt.Fprintln(streams.Out(), ansi.Info("Enter the name of the repository to confirm deletion:"), namedRef.Name())
-		userIn := make(chan string, 1)
-		go func() {
-			reader := bufio.NewReader(streams.In())
-			input, _ := reader.ReadString('\n')
-			userIn <- strings.ToLower(strings.TrimSpace(input))
-		}()
-		input := ""
-		select {
-		case <-ctx.Done():
-			return errdef.ErrCanceled
-		case input = <-userIn:
+		if _, err := fmt.Fprintln(streams.Out(), ansi.Warn(fmt.Sprintf("WARNING: You are about to permanently delete repository %q including %d tag(s)", namedRef.Name(), count))); err != nil {
+			return err
 		}
-		if input != namedRef.Name() {
+		if _, err := fmt.Fprintln(streams.Out(), ansi.Warn("         This action is irreversible")); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(streams.Out(), ansi.Info("Enter the name of the repository to confirm deletion:"), namedRef.Name()); err != nil {
+			return err
+		}
+	}
+	err = commandutil.ConfirmUnlessForced(ctx, streams.In(), opts.force, commandutil.MatchConfirmation(
+		namedRef.Name(),
+		func(input string) error {
 			return fmt.Errorf("%q differs from your repository name, deletion aborted", input)
-		}
+		},
+	))
+	if err != nil {
+		return err
 	}
 
 	if err := hubClient.RemoveRepository(namedRef.Name()); err != nil {

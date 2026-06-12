@@ -17,10 +17,10 @@
 package repo
 
 import (
-	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
 	"github.com/spf13/cobra"
 
+	"github.com/docker/hub-tool/internal/commands/commandutil"
 	"github.com/docker/hub-tool/pkg/hub"
 )
 
@@ -30,13 +30,7 @@ const (
 
 // NewRepoCmd configures the repo manage command
 func NewRepoCmd(streams command.Streams, hubClient *hub.Client) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:                   repoName,
-		Short:                 "Manage repositories",
-		Args:                  cli.NoArgs,
-		DisableFlagsInUseLine: true,
-		RunE:                  command.ShowHelp(streams.Err()),
-	}
+	cmd := commandutil.NewParentCommand(streams, repoName, "Manage repositories", nil)
 	cmd.AddCommand(
 		newListCmd(streams, hubClient, repoName),
 		newRmCmd(streams, hubClient, repoName),

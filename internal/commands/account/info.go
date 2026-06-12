@@ -17,8 +17,11 @@
 package account
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/docker/cli/cli"
@@ -86,34 +89,40 @@ func runOrgInfo(streams command.Streams, hubClient *hub.Client, opts infoOptions
 		return err
 	}
 
-	plan, err := hubClient.GetHubPlan(org.ID)
-	if err != nil {
-		return checkForbiddenError(err)
-	}
-
-	return opts.Print(streams.Out(), account{org, plan, consumption}, printAccount)
+	return opts.Print(streams.Out(), account{Account: org, Consumption: consumption}, printAccount)
 }
 
 func runUserInfo(streams command.Streams, hubClient *hub.Client, opts infoOptions) error {
-	user, err := hubClient.GetUserInfo()
-	if err != nil {
+	var (
+		user          *hub.Account
+		organizations []hub.Organization
+	)
+
+	g := errgroup.Group{}
+	g.Go(func() error {
+		var err error
+		user, err = hubClient.GetUserInfo()
 		return checkForbiddenError(err)
+	})
+	g.Go(func() error {
+		var err error
+		organizations, err = hubClient.GetOrganizations(context.Background())
+		return checkForbiddenError(err)
+	})
+	if err := g.Wait(); err != nil {
+		return err
 	}
+
 	consumption, err := hubClient.GetUserConsumption(user.Name)
 	if err != nil {
 		return checkForbiddenError(err)
 	}
-	plan, err := hubClient.GetHubPlan(user.ID)
-	if err != nil {
-		return checkForbiddenError(err)
-	}
-
-	return opts.Print(streams.Out(), account{user, plan, consumption}, printAccount)
+	return opts.Print(streams.Out(), account{Account: user, Consumption: consumption, Organizations: organizations}, printAccount)
 }
 
 func checkForbiddenError(err error) error {
 	if hub.IsForbiddenError(err) {
-		return fmt.Errorf(ansi.Error("failed to get organization information, you need to be the organization Owner"))
+		return errors.New(ansi.Error("failed to get organization information, you need to be the organization Owner"))
 	}
 	return err
 }
@@ -122,40 +131,108 @@ func printAccount(out io.Writer, value interface{}) error {
 	account := value.(account)
 
 	// print user info
-	fmt.Fprintf(out, ansi.Key("Name:")+"\t\t%s\n", account.Account.Name)
-	fmt.Fprintf(out, ansi.Key("Full name:")+"\t%s\n", account.Account.FullName)
-	fmt.Fprintf(out, ansi.Key("Company:")+"\t%s\n", account.Account.Company)
-	fmt.Fprintf(out, ansi.Key("Location:")+"\t%s\n", account.Account.Location)
-	fmt.Fprintf(out, ansi.Key("Joined:")+"\t\t%s ago\n", units.HumanDuration(time.Since(account.Account.Joined)))
-	fmt.Fprintf(out, ansi.Key("Plan:")+"\t\t%s\n", ansi.Emphasise(account.Plan.Name))
+	if err := writeLine(out, ansi.Key("Name:")+"\t\t%s\n", account.Account.Name); err != nil {
+		return err
+	}
+	if err := writeLine(out, ansi.Key("ID:")+"\t\t%s\n", account.Account.ID); err != nil {
+		return err
+	}
+	if err := printProfileFields(out, account.Account); err != nil {
+		return err
+	}
+	if err := writeLine(out, ansi.Key("Joined:")+"\t\t%s ago\n", units.HumanDuration(time.Since(account.Account.Joined))); err != nil {
+		return err
+	}
+	if err := writeString(out, ansi.Key("Usage:")+"\n"); err != nil {
+		return err
+	}
+	if err := printUsage(out, account.Account, account.Consumption); err != nil {
+		return err
+	}
 
-	// print plan info
-	fmt.Fprintf(out, ansi.Key("Limits:")+"\n")
-	fmt.Fprintf(out, ansi.Key("  Seats:")+"\t\t%v\n", getCurrentLimit(account.Consumption.Seats, account.Plan.Limits.Seats))
-	fmt.Fprintf(out, ansi.Key("  Private repositories:")+"\t%v\n", getCurrentLimit(account.Consumption.PrivateRepositories, account.Plan.Limits.PrivateRepos))
-	fmt.Fprintf(out, ansi.Key("  Teams:")+"\t\t%v\n", getCurrentLimit(account.Consumption.Teams, account.Plan.Limits.Teams))
-	fmt.Fprintf(out, ansi.Key("  Collaborators:")+"\t%v\n", getLimit(account.Plan.Limits.Collaborators))
-	fmt.Fprintf(out, ansi.Key("  Parallel builds:")+"\t%v\n", getLimit(account.Plan.Limits.ParallelBuilds))
+	if len(account.Organizations) > 0 {
+		if err := writeString(out, ansi.Key("Organizations:")+"\n"); err != nil {
+			return err
+		}
+		if err := printOrganizations(out, account.Organizations); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
 
-func getCurrentLimit(current, limit int) string {
-	if limit == 9999 {
-		return ansi.Emphasise("unlimited")
+func printProfileFields(out io.Writer, account *hub.Account) error {
+	fields := []struct {
+		label string
+		value string
+	}{
+		{ansi.Key("Type:") + "\t\t%s\n", account.Type},
+		{ansi.Key("Full name:") + "\t%s\n", account.FullName},
+		{ansi.Key("Company:") + "\t%s\n", account.Company},
+		{ansi.Key("Location:") + "\t%s\n", account.Location},
+		{ansi.Key("Profile URL:") + "\t%s\n", account.ProfileURL},
 	}
-	return fmt.Sprintf("%v/%v", current, limit)
+	for _, field := range fields {
+		if field.value == "" {
+			continue
+		}
+		if err := writeLine(out, field.label, field.value); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-func getLimit(limit int) string {
-	if limit == 9999 {
-		return ansi.Emphasise("unlimited")
+func printUsage(out io.Writer, account *hub.Account, consumption *hub.Consumption) error {
+	if isOrganization(account) {
+		if err := writeLine(out, ansi.Key("  Members:")+"\t\t%v\n", consumption.Seats); err != nil {
+			return err
+		}
+		if err := writeLine(out, ansi.Key("  Teams:")+"\t\t%v\n", consumption.Teams); err != nil {
+			return err
+		}
 	}
-	return fmt.Sprintf("%v", limit)
+	if err := writeLine(out, ansi.Key("  Repositories:")+"\t\t%v\n", consumption.Repositories); err != nil {
+		return err
+	}
+	if err := writeLine(out, ansi.Key("  Public repositories:")+"\t%v\n", consumption.Repositories-consumption.PrivateRepositories); err != nil {
+		return err
+	}
+	return writeLine(out, ansi.Key("  Private repositories:")+"\t%v\n", consumption.PrivateRepositories)
+}
+
+func isOrganization(account *hub.Account) bool {
+	return strings.EqualFold(account.Type, "org") || strings.EqualFold(account.Type, "organization")
+}
+
+func printOrganizations(out io.Writer, organizations []hub.Organization) error {
+	for _, org := range organizations {
+		name := org.Namespace
+		if org.FullName != "" {
+			name = fmt.Sprintf("%s (%s)", org.Namespace, org.FullName)
+		}
+		if err := writeLine(out, "  %-24s %-8s repos=%-4d public=%-4d private=%-4d teams=%-4d members=%d\n",
+			name, org.Role, org.Repositories, org.PublicRepos, org.PrivateRepos, len(org.Teams), len(org.Members)); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func writeLine(out io.Writer, format string, args ...interface{}) error {
+	_, err := fmt.Fprintf(out, format, args...)
+	return err
+}
+
+func writeString(out io.Writer, value string) error {
+	_, err := fmt.Fprint(out, value)
+	return err
 }
 
 type account struct {
-	Account     *hub.Account
-	Plan        *hub.Plan
-	Consumption *hub.Consumption
+	Account       *hub.Account
+	Consumption   *hub.Consumption
+	Organizations []hub.Organization
 }

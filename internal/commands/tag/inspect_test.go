@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	digest "github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"gotest.tools/v3/assert"
@@ -42,10 +43,7 @@ func TestPrintImage(t *testing.T) {
 				Size:      456,
 			},
 		},
-		Annotations: map[string]string{
-			"annotation1": "value1",
-			"annotation2": "value2",
-		},
+		Annotations: testAnnotations(),
 	}
 	now := time.Now()
 	config := ocispec.Image{
@@ -81,16 +79,7 @@ func TestPrintImage(t *testing.T) {
 			},
 		},
 	}
-	manifestDescriptor := ocispec.Descriptor{
-		MediaType: "mediatype/manifest",
-		Digest:    "sha256:abcdef",
-		Size:      789,
-		Platform: &ocispec.Platform{
-			Architecture: "arch",
-			OS:           "os",
-			Variant:      "variant",
-		},
-	}
+	manifestDescriptor := testManifestDescriptor()
 	image := Image{"image:latest", manifest, config, manifestDescriptor}
 
 	out := bytes.NewBuffer(nil)
@@ -103,40 +92,49 @@ func TestPrintIndex(t *testing.T) {
 	index := ocispec.Index{
 		Versioned: specs.Versioned{},
 		Manifests: []ocispec.Descriptor{
-			{
-				MediaType:   "mediatype/manifest",
-				Digest:      "sha256:abcdef",
-				Annotations: nil,
-				Platform: &ocispec.Platform{
-					Architecture: "arch",
-					OS:           "os",
-					Variant:      "variant",
-				},
-			},
-			{
-				MediaType:   "mediatype/manifest",
-				Digest:      "sha256:beef",
-				Annotations: nil,
-				Platform: &ocispec.Platform{
-					Architecture: "arch2",
-					OS:           "os2",
-				},
-			},
+			testPlatformDescriptor("sha256:abcdef", "arch", "os", "variant"),
+			testPlatformDescriptor("sha256:beef", "arch2", "os2", ""),
 		},
-		Annotations: map[string]string{
-			"annotation1": "value1",
-			"annotation2": "value2",
-		},
+		Annotations: testAnnotations(),
 	}
-	indexDescriptor := ocispec.Descriptor{
-		MediaType: "mediatype/ociindex",
-		Digest:    "sha256:abcdef",
-		Size:      789,
-	}
+	indexDescriptor := testIndexDescriptor()
 	image := Index{"image:latest", index, indexDescriptor}
 
 	out := bytes.NewBuffer(nil)
 	err := printManifestList(out, image)
 	assert.NilError(t, err)
 	golden.Assert(t, out.String(), "inspect-manifest-list.golden")
+}
+
+func testManifestDescriptor() ocispec.Descriptor {
+	descriptor := testPlatformDescriptor("sha256:abcdef", "arch", "os", "variant")
+	descriptor.Size = 789
+	return descriptor
+}
+
+func testIndexDescriptor() ocispec.Descriptor {
+	return ocispec.Descriptor{
+		MediaType: "mediatype/ociindex",
+		Digest:    "sha256:abcdef",
+		Size:      789,
+	}
+}
+
+func testAnnotations() map[string]string {
+	return map[string]string{
+		"annotation1": "value1",
+		"annotation2": "value2",
+	}
+}
+
+func testPlatformDescriptor(digestValue, architecture, os, variant string) ocispec.Descriptor {
+	return ocispec.Descriptor{
+		MediaType: "mediatype/manifest",
+		Digest:    digest.Digest(digestValue),
+		Platform: &ocispec.Platform{
+			Architecture: architecture,
+			OS:           os,
+			Variant:      variant,
+		},
+	}
 }

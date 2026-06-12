@@ -39,7 +39,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/docker/hub-tool/internal/ansi"
-	"github.com/docker/hub-tool/internal/metrics"
+	"github.com/docker/hub-tool/internal/commands/commandutil"
 	"github.com/docker/hub-tool/pkg/hub"
 )
 
@@ -69,18 +69,16 @@ type Index struct {
 
 func newInspectCmd(streams command.Streams, hubClient *hub.Client, parent string) *cobra.Command {
 	var opts inspectOptions
-	cmd := &cobra.Command{
-		Use:                   inspectName + " [OPTIONS] REPOSITORY:TAG",
-		Short:                 "Show the details of an image in the registry",
-		Args:                  cli.ExactArgs(1),
-		DisableFlagsInUseLine: true,
-		PreRun: func(cmd *cobra.Command, args []string) {
-			metrics.Send(parent, inspectName)
-		},
+	cmd := commandutil.NewCommand(commandutil.CommandConfig{
+		Use:    inspectName + " [OPTIONS] REPOSITORY:TAG",
+		Short:  "Show the details of an image in the registry",
+		Args:   cli.ExactArgs(1),
+		Parent: parent,
+		Name:   inspectName,
 		RunE: func(_ *cobra.Command, args []string) error {
 			return runInspect(streams, hubClient, opts, args[0])
 		},
-	}
+	})
 	cmd.Flags().StringVar(&opts.format, "format", "", `Print original manifest ("json|raw")`)
 	cmd.Flags().StringVar(&opts.platform, "platform", "", `Select a platform if the tag is a multi-architecture image`)
 	return cmd
@@ -132,8 +130,12 @@ func runInspect(streams command.Streams, hubClient *hub.Client, opts inspectOpti
 	case images.MediaTypeDockerSchema2Manifest, ocispec.MediaTypeImageManifest:
 		return formatManifest(hubClient.Ctx, streams, resolver, opts.format, raw, descriptor, ref.Name())
 	default:
-		fmt.Fprintln(streams.Out(), ansi.Title("Unsupported mediatype"))
-		fmt.Fprintln(streams.Out(), raw)
+		if err := writeString(streams.Out(), ansi.Title("Unsupported mediatype")+"\n"); err != nil {
+			return err
+		}
+		if err := writeLine(streams.Out(), "%s\n", raw); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -178,22 +180,9 @@ func formatManifestlist(ctx context.Context, streams command.Streams, resolver r
 		Index:      index,
 		Descriptor: descriptor,
 	}
-	switch format {
-	case "raw":
-		_, err := fmt.Printf("%s", raw) // avoid newline to keep digest
-		return err
-	case "json":
-		buf, err := json.MarshalIndent(index, "", "  ")
-		if err != nil {
-			return err
-		}
-		_, err = fmt.Fprint(streams.Out(), string(buf))
-		return err
-	case "":
-		return printManifestList(streams.Out(), image)
-	default:
-		return fmt.Errorf("unsupported format type: %q", format)
-	}
+	return formatOutput(streams.Out(), format, raw, index, func(out io.Writer) error {
+		return printManifestList(out, image)
+	})
 }
 
 func formatManifest(ctx context.Context, streams command.Streams, resolver remotes.Resolver,
@@ -202,19 +191,25 @@ func formatManifest(ctx context.Context, streams command.Streams, resolver remot
 	if err != nil {
 		return err
 	}
+	return formatOutput(streams.Out(), format, raw, image, func(out io.Writer) error {
+		return printImage(out, image)
+	})
+}
+
+func formatOutput(out io.Writer, format string, raw []byte, value interface{}, printPretty func(io.Writer) error) error {
 	switch format {
 	case "raw":
-		_, err := fmt.Printf("%s", raw) // avoid newline to keep digest
+		_, err := fmt.Fprintf(out, "%s", raw) // avoid newline to keep digest
 		return err
 	case "json":
-		buf, err := json.MarshalIndent(image, "", "  ")
+		buf, err := json.MarshalIndent(value, "", "  ")
 		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprint(streams.Out(), string(buf))
+		_, err = fmt.Fprint(out, string(buf))
 		return err
 	case "":
-		return printImage(streams.Out(), image)
+		return printPretty(out)
 	default:
 		return fmt.Errorf("unsupported format type: %q", format)
 	}
@@ -271,120 +266,207 @@ func printImage(out io.Writer, image *Image) error {
 }
 
 func printManifestList(out io.Writer, image Index) error {
-	fmt.Fprintf(out, ansi.Title("Manifest List:")+"\n")
-	fmt.Fprintf(out, ansi.Key("Name:")+"\t\t%s\n", image.Name)
-	fmt.Fprintf(out, ansi.Key("MediaType:")+"\t%s\n", image.Descriptor.MediaType)
-	fmt.Fprintf(out, ansi.Key("Digest:")+"\t\t%s\n", image.Descriptor.Digest)
+	if err := writeString(out, ansi.Title("Manifest List:")+"\n"); err != nil {
+		return err
+	}
+	if err := writeLine(out, ansi.Key("Name:")+"\t\t%s\n", image.Name); err != nil {
+		return err
+	}
+	if err := writeLine(out, ansi.Key("MediaType:")+"\t%s\n", image.Descriptor.MediaType); err != nil {
+		return err
+	}
+	if err := writeLine(out, ansi.Key("Digest:")+"\t\t%s\n", image.Descriptor.Digest); err != nil {
+		return err
+	}
 	if len(image.Index.Annotations) > 0 {
-		printAnnotations(out, image.Index.Annotations)
+		if err := printAnnotations(out, image.Index.Annotations); err != nil {
+			return err
+		}
 	} else if len(image.Descriptor.Annotations) > 0 {
-		printAnnotations(out, image.Descriptor.Annotations)
+		if err := printAnnotations(out, image.Descriptor.Annotations); err != nil {
+			return err
+		}
 	}
 
-	fmt.Fprintf(out, "\n")
+	if err := writeString(out, "\n"); err != nil {
+		return err
+	}
 
-	fmt.Fprintf(out, ansi.Title("Manifests:")+"\n")
+	if err := writeString(out, ansi.Title("Manifests:")+"\n"); err != nil {
+		return err
+	}
 	for i, m := range image.Index.Manifests {
 		if i != 0 {
-			fmt.Fprintln(out)
+			if err := writeString(out, "\n"); err != nil {
+				return err
+			}
 		}
-		fmt.Fprintf(out, ansi.Key("Name:")+"\t\t%s\n", fmt.Sprintf("%s@%s", image.Name, m.Digest))
-		fmt.Fprintf(out, ansi.Key("Mediatype:")+"\t%s\n", m.MediaType)
-		fmt.Fprintf(out, ansi.Key("Platform:")+"\t%s\n", formatPlatform(m.Platform))
+		if err := writeLine(out, ansi.Key("Name:")+"\t\t%s\n", fmt.Sprintf("%s@%s", image.Name, m.Digest)); err != nil {
+			return err
+		}
+		if err := writeLine(out, ansi.Key("Mediatype:")+"\t%s\n", m.MediaType); err != nil {
+			return err
+		}
+		if err := writeLine(out, ansi.Key("Platform:")+"\t%s\n", formatPlatform(m.Platform)); err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
 func printManifest(out io.Writer, image *Image) error {
-	fmt.Fprintf(out, ansi.Title("Manifest:")+"\n")
-	fmt.Fprintf(out, ansi.Key("Name:")+"\t\t%s\n", image.Name)
-	fmt.Fprintf(out, ansi.Key("MediaType:")+"\t%s\n", image.Descriptor.MediaType)
-	fmt.Fprintf(out, ansi.Key("Digest:")+"\t\t%s\n", image.Descriptor.Digest)
+	if err := writeString(out, ansi.Title("Manifest:")+"\n"); err != nil {
+		return err
+	}
+	if err := writeLine(out, ansi.Key("Name:")+"\t\t%s\n", image.Name); err != nil {
+		return err
+	}
+	if err := writeLine(out, ansi.Key("MediaType:")+"\t%s\n", image.Descriptor.MediaType); err != nil {
+		return err
+	}
+	if err := writeLine(out, ansi.Key("Digest:")+"\t\t%s\n", image.Descriptor.Digest); err != nil {
+		return err
+	}
 	if image.Descriptor.Platform != nil {
-		fmt.Fprintf(out, ansi.Key("Platform:")+"\t%s\n", formatPlatform(image.Descriptor.Platform))
+		if err := writeLine(out, ansi.Key("Platform:")+"\t%s\n", formatPlatform(image.Descriptor.Platform)); err != nil {
+			return err
+		}
 	}
 	if len(image.Manifest.Annotations) > 0 {
-		printAnnotations(out, image.Manifest.Annotations)
+		if err := printAnnotations(out, image.Manifest.Annotations); err != nil {
+			return err
+		}
 	} else if len(image.Descriptor.Annotations) > 0 {
-		printAnnotations(out, image.Descriptor.Annotations)
+		if err := printAnnotations(out, image.Descriptor.Annotations); err != nil {
+			return err
+		}
 	}
 	if image.Config.Architecture != "" {
-		fmt.Fprintf(out, ansi.Key("Os/Arch:")+"\t%s/%s\n", image.Config.OS, image.Config.Architecture)
+		if err := writeLine(out, ansi.Key("Os/Arch:")+"\t%s/%s\n", image.Config.OS, image.Config.Architecture); err != nil {
+			return err
+		}
 	}
 	if image.Config.Author != "" {
-		fmt.Fprintf(out, ansi.Key("Author:")+"\t%s\n", image.Config.Author)
+		if err := writeLine(out, ansi.Key("Author:")+"\t%s\n", image.Config.Author); err != nil {
+			return err
+		}
 	}
 	if image.Config.Created != nil {
-		fmt.Fprintf(out, ansi.Key("Created:")+"\t%s ago\n", units.HumanDuration(time.Since(*image.Config.Created)))
+		if err := writeLine(out, ansi.Key("Created:")+"\t%s ago\n", units.HumanDuration(time.Since(*image.Config.Created))); err != nil {
+			return err
+		}
 	}
 
-	fmt.Fprintf(out, "\n")
-
-	return nil
+	return writeString(out, "\n")
 }
 
 func printConfig(out io.Writer, image *Image) error {
-	fmt.Fprintf(out, ansi.Title("Config:")+"\n")
-	fmt.Fprintf(out, ansi.Key("MediaType:")+"\t%s\n", image.Manifest.Config.MediaType)
-	fmt.Fprintf(out, ansi.Key("Size:")+"\t\t%v\n", units.HumanSize(float64(image.Manifest.Config.Size)))
-	fmt.Fprintf(out, ansi.Key("Digest:")+"\t\t%s\n", image.Manifest.Config.Digest)
+	if err := writeString(out, ansi.Title("Config:")+"\n"); err != nil {
+		return err
+	}
+	if err := writeLine(out, ansi.Key("MediaType:")+"\t%s\n", image.Manifest.Config.MediaType); err != nil {
+		return err
+	}
+	if err := writeLine(out, ansi.Key("Size:")+"\t\t%v\n", units.HumanSize(float64(image.Manifest.Config.Size))); err != nil {
+		return err
+	}
+	if err := writeLine(out, ansi.Key("Digest:")+"\t\t%s\n", image.Manifest.Config.Digest); err != nil {
+		return err
+	}
 	if len(image.Config.Config.Cmd) > 0 {
-		fmt.Fprintf(out, ansi.Key("Command:")+"\t%q\n", strings.TrimPrefix(strings.Join(image.Config.Config.Cmd, " "), "/bin/sh -c "))
+		if err := writeLine(out, ansi.Key("Command:")+"\t%q\n", strings.TrimPrefix(strings.Join(image.Config.Config.Cmd, " "), "/bin/sh -c ")); err != nil {
+			return err
+		}
 	}
 	if len(image.Config.Config.Entrypoint) > 0 {
-		fmt.Fprintf(out, ansi.Key("Entrypoint:")+"\t%q\n", strings.Join(image.Config.Config.Entrypoint, " "))
+		if err := writeLine(out, ansi.Key("Entrypoint:")+"\t%q\n", strings.Join(image.Config.Config.Entrypoint, " ")); err != nil {
+			return err
+		}
 	}
 	if image.Config.Config.User != "" {
-		fmt.Fprintf(out, ansi.Key("User:")+"\t%s\n", image.Config.Config.User)
+		if err := writeLine(out, ansi.Key("User:")+"\t%s\n", image.Config.Config.User); err != nil {
+			return err
+		}
 	}
 	if len(image.Config.Config.ExposedPorts) > 0 {
-		fmt.Fprintf(out, ansi.Key("Exposed ports:")+"\t%s\n", getExposedPorts(image.Config.Config.ExposedPorts))
+		if err := writeLine(out, ansi.Key("Exposed ports:")+"\t%s\n", getExposedPorts(image.Config.Config.ExposedPorts)); err != nil {
+			return err
+		}
 	}
 	if len(image.Config.Config.Env) > 0 {
-		fmt.Fprintf(out, ansi.Key("Environment:")+"\n")
+		if err := writeString(out, ansi.Key("Environment:")+"\n"); err != nil {
+			return err
+		}
 		for _, env := range image.Config.Config.Env {
-			fmt.Fprintf(out, "    %s\n", env)
+			if err := writeLine(out, "    %s\n", env); err != nil {
+				return err
+			}
 		}
 	}
 	if len(image.Config.Config.Volumes) > 0 {
-		fmt.Fprintf(out, ansi.Key("Volumes:")+"\n")
+		if err := writeString(out, ansi.Key("Volumes:")+"\n"); err != nil {
+			return err
+		}
 		for volume := range image.Config.Config.Volumes {
-			fmt.Fprintf(out, "%s\n", volume)
+			if err := writeLine(out, "%s\n", volume); err != nil {
+				return err
+			}
 		}
 	}
 	if image.Config.Config.WorkingDir != "" {
-		fmt.Fprintf(out, ansi.Key("Working Directory:")+"\t%q\n", image.Config.Config.WorkingDir)
+		if err := writeLine(out, ansi.Key("Working Directory:")+"\t%q\n", image.Config.Config.WorkingDir); err != nil {
+			return err
+		}
 	}
 	if len(image.Config.Config.Labels) > 0 {
-		fmt.Fprintf(out, ansi.Key("Labels:")+"\n")
+		if err := writeString(out, ansi.Key("Labels:")+"\n"); err != nil {
+			return err
+		}
 		keys := sortMapKeys(image.Config.Config.Labels)
 		for _, k := range keys {
-			fmt.Fprintf(out, "    %s=%q\n", k, image.Config.Config.Labels[k])
+			if err := writeLine(out, "    %s=%q\n", k, image.Config.Config.Labels[k]); err != nil {
+				return err
+			}
 		}
 	}
 	if image.Config.Config.StopSignal != "" {
-		fmt.Fprintf(out, ansi.Key("Stop signal:")+"\t\t%s\n", image.Config.Config.StopSignal)
+		if err := writeLine(out, ansi.Key("Stop signal:")+"\t\t%s\n", image.Config.Config.StopSignal); err != nil {
+			return err
+		}
 	}
 
-	fmt.Fprintf(out, "\n")
-	return nil
+	return writeString(out, "\n")
 }
 
 func printLayers(out io.Writer, image *Image) error {
 	history := filterEmptyLayers(image.Config.History)
-	fmt.Fprintln(out, ansi.Title("Layers:"))
+	if err := writeString(out, ansi.Title("Layers:")+"\n"); err != nil {
+		return err
+	}
 	for i, layer := range image.Manifest.Layers {
 		if i != 0 {
-			fmt.Fprintln(out)
+			if err := writeString(out, "\n"); err != nil {
+				return err
+			}
 		}
-		fmt.Fprintf(out, ansi.Key("MediaType:")+"\t%s\n", layer.MediaType)
-		fmt.Fprintf(out, ansi.Key("Size:")+"\t\t%v\n", units.HumanSize(float64(layer.Size)))
-		fmt.Fprintf(out, ansi.Key("Digest:")+"\t\t%s\n", layer.Digest)
+		if err := writeLine(out, ansi.Key("MediaType:")+"\t%s\n", layer.MediaType); err != nil {
+			return err
+		}
+		if err := writeLine(out, ansi.Key("Size:")+"\t\t%v\n", units.HumanSize(float64(layer.Size))); err != nil {
+			return err
+		}
+		if err := writeLine(out, ansi.Key("Digest:")+"\t\t%s\n", layer.Digest); err != nil {
+			return err
+		}
 		if len(image.Manifest.Layers) == len(history) {
-			fmt.Fprintf(out, ansi.Key("Command:")+"\t%s\n", cleanCreatedBy(history[i].CreatedBy))
+			if err := writeLine(out, ansi.Key("Command:")+"\t%s\n", cleanCreatedBy(history[i].CreatedBy)); err != nil {
+				return err
+			}
 			if history[i].Created != nil {
-				fmt.Fprintf(out, ansi.Key("Created:")+"\t%s ago\n", units.HumanDuration(time.Since(*history[i].Created)))
+				if err := writeLine(out, ansi.Key("Created:")+"\t%s ago\n", units.HumanDuration(time.Since(*history[i].Created))); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -422,12 +504,27 @@ func getExposedPorts(configPorts map[string]struct{}) string {
 	return strings.Join(ports, " ")
 }
 
-func printAnnotations(out io.Writer, annotations map[string]string) {
-	fmt.Fprintf(out, ansi.Key("Annotations:")+"\n")
+func printAnnotations(out io.Writer, annotations map[string]string) error {
+	if err := writeString(out, ansi.Key("Annotations:")+"\n"); err != nil {
+		return err
+	}
 	keys := sortMapKeys(annotations)
 	for _, k := range keys {
-		fmt.Fprintf(out, "%s:\t%s\n", k, annotations[k])
+		if err := writeLine(out, "%s:\t%s\n", k, annotations[k]); err != nil {
+			return err
+		}
 	}
+	return nil
+}
+
+func writeLine(out io.Writer, format string, args ...interface{}) error {
+	_, err := fmt.Fprintf(out, format, args...)
+	return err
+}
+
+func writeString(out io.Writer, value string) error {
+	_, err := fmt.Fprint(out, value)
+	return err
 }
 
 func sortMapKeys(m map[string]string) []string {

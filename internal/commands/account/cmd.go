@@ -17,10 +17,10 @@
 package account
 
 import (
-	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
 	"github.com/spf13/cobra"
 
+	"github.com/docker/hub-tool/internal/commands/commandutil"
 	"github.com/docker/hub-tool/pkg/hub"
 )
 
@@ -30,19 +30,9 @@ const (
 
 // NewAccountCmd configures the org manage command
 func NewAccountCmd(streams command.Streams, hubClient *hub.Client) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:                   accountName,
-		Short:                 "Manage your account",
-		Args:                  cli.NoArgs,
-		DisableFlagsInUseLine: true,
-		Annotations: map[string]string{
-			"sudo": "true",
-		},
-		RunE: command.ShowHelp(streams.Err()),
-	}
+	cmd := commandutil.NewParentCommand(streams, accountName, "Manage your account", commandutil.SudoAnnotation())
 	cmd.AddCommand(
 		newInfoCmd(streams, hubClient, accountName),
-		newRateLimitingCmd(streams, hubClient, accountName),
 	)
 	return cmd
 }

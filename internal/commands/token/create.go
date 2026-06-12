@@ -25,8 +25,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/docker/hub-tool/internal/ansi"
+	"github.com/docker/hub-tool/internal/commands/commandutil"
 	"github.com/docker/hub-tool/internal/format"
-	"github.com/docker/hub-tool/internal/metrics"
 	"github.com/docker/hub-tool/pkg/hub"
 )
 
@@ -42,21 +42,17 @@ type createOptions struct {
 
 func newCreateCmd(streams command.Streams, hubClient *hub.Client, parent string) *cobra.Command {
 	var opts createOptions
-	cmd := &cobra.Command{
-		Use:                   createName + " [OPTIONS]",
-		Short:                 "Create a Personal Access Token",
-		Args:                  cli.NoArgs,
-		DisableFlagsInUseLine: true,
-		Annotations: map[string]string{
-			"sudo": "true",
-		},
-		PreRun: func(cmd *cobra.Command, args []string) {
-			metrics.Send(parent, createName)
-		},
+	cmd := commandutil.NewCommand(commandutil.CommandConfig{
+		Use:         createName + " [OPTIONS]",
+		Short:       "Create a Personal Access Token",
+		Args:        cli.NoArgs,
+		Annotations: commandutil.SudoAnnotation(),
+		Parent:      parent,
+		Name:        createName,
 		RunE: func(_ *cobra.Command, args []string) error {
 			return runCreate(streams, hubClient, opts)
 		},
-	}
+	})
 	opts.AddFormatFlag(cmd.Flags())
 	cmd.Flags().StringVar(&opts.description, "description", "", "Set token's description")
 	cmd.Flags().BoolVar(&opts.quiet, "quiet", false, "Display only created token")
@@ -69,8 +65,8 @@ func runCreate(streams command.Streams, hubClient *hub.Client, opts createOption
 		return err
 	}
 	if opts.quiet {
-		fmt.Fprintln(streams.Out(), token.Token)
-		return nil
+		_, err := fmt.Fprintln(streams.Out(), token.Token)
+		return err
 	}
 	return opts.Print(streams.Out(), token, printCreatedToken(hubClient))
 }
@@ -78,7 +74,7 @@ func runCreate(streams command.Streams, hubClient *hub.Client, opts createOption
 func printCreatedToken(hubClient *hub.Client) format.PrettyPrinter {
 	return func(out io.Writer, value interface{}) error {
 		helper := value.(*hub.Token)
-		fmt.Fprintf(out, ansi.Emphasise("Personal Access Token successfully created!")+`
+		_, err := fmt.Fprintf(out, ansi.Emphasise("Personal Access Token successfully created!")+`
 
 When logging in from your Docker CLI client, use this token as a password.
 `+ansi.Header("Description:")+` %s
@@ -95,6 +91,6 @@ It will not be stored and cannot be retrieved. Please be sure to save it now.
 			helper.Description,
 			hubClient.AuthConfig.Username,
 			ansi.Emphasise(helper.Token))
-		return nil
+		return err
 	}
 }

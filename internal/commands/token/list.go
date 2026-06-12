@@ -18,7 +18,6 @@ package token
 
 import (
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/docker/cli/cli"
@@ -26,10 +25,7 @@ import (
 	"github.com/docker/go-units"
 	"github.com/spf13/cobra"
 
-	"github.com/docker/hub-tool/internal/ansi"
-	"github.com/docker/hub-tool/internal/format"
-	"github.com/docker/hub-tool/internal/format/tabwriter"
-	"github.com/docker/hub-tool/internal/metrics"
+	"github.com/docker/hub-tool/internal/commands/commandutil"
 	"github.com/docker/hub-tool/pkg/hub"
 )
 
@@ -38,96 +34,55 @@ const (
 )
 
 var (
-	defaultColumns = []column{
-		{"DESCRIPTION", func(t hub.Token) (string, int) { return t.Description, len(t.Description) }},
-		{"UUID", func(t hub.Token) (string, int) { return t.UUID.String(), len(t.UUID.String()) }},
-		{"LAST USED", func(t hub.Token) (string, int) {
-			s := "Never"
-			if !t.LastUsed.IsZero() {
-				s = fmt.Sprintf("%s ago", units.HumanDuration(time.Since(t.LastUsed)))
-			}
-			return s, len(s)
-		}},
-		{"CREATED", func(t hub.Token) (string, int) {
-			s := units.HumanDuration(time.Since(t.CreatedAt))
-			return s, len(s)
-		}},
-		{"ACTIVE", func(t hub.Token) (string, int) {
-			s := fmt.Sprintf("%v", t.IsActive)
-			return s, len(s)
-		}},
+	defaultColumns = []commandutil.Column[hub.Token]{
+		commandutil.TextColumn("DESCRIPTION", func(t hub.Token) string { return t.Description }),
+		commandutil.TextColumn("UUID", func(t hub.Token) string { return t.UUID.String() }),
+		{
+			Header: "LAST USED",
+			Value: func(t hub.Token) (string, int) {
+				s := "Never"
+				if !t.LastUsed.IsZero() {
+					s = fmt.Sprintf("%s ago", units.HumanDuration(time.Since(t.LastUsed)))
+				}
+				return s, len(s)
+			},
+		},
+		{
+			Header: "CREATED",
+			Value: func(t hub.Token) (string, int) {
+				s := units.HumanDuration(time.Since(t.CreatedAt))
+				return s, len(s)
+			},
+		},
+		commandutil.BoolColumn("ACTIVE", func(t hub.Token) bool { return t.IsActive }),
 	}
 )
 
-type column struct {
-	header string
-	value  func(t hub.Token) (string, int)
-}
-
-type listOptions struct {
-	format.Option
-	all bool
-}
-
 func newListCmd(streams command.Streams, hubClient *hub.Client, parent string) *cobra.Command {
-	var opts listOptions
-	cmd := &cobra.Command{
-		Use:                   lsName + " [OPTION]",
-		Aliases:               []string{"list"},
-		Short:                 "List all the Personal Access Tokens",
-		Args:                  cli.NoArgs,
-		DisableFlagsInUseLine: true,
-		Annotations: map[string]string{
-			"sudo": "true",
-		},
-		PreRun: func(cmd *cobra.Command, args []string) {
-			metrics.Send(parent, lsName)
-		},
+	var opts commandutil.ListOptions
+	cmd := commandutil.NewCommand(commandutil.CommandConfig{
+		Use:         lsName + " [OPTION]",
+		Aliases:     []string{"list"},
+		Short:       "List all the Personal Access Tokens",
+		Args:        cli.NoArgs,
+		Annotations: commandutil.SudoAnnotation(),
+		Parent:      parent,
+		Name:        lsName,
 		RunE: func(_ *cobra.Command, args []string) error {
 			return runList(streams, hubClient, opts)
 		},
-	}
-	cmd.Flags().BoolVar(&opts.all, "all", false, "Fetch all available tokens")
-	opts.AddFormatFlag(cmd.Flags())
+	})
+	opts.AddListFlags(cmd, "Fetch all available tokens")
 	return cmd
 }
 
-func runList(streams command.Streams, hubClient *hub.Client, opts listOptions) error {
-	if opts.all {
-		if err := hubClient.Update(hub.WithAllElements()); err != nil {
-			return err
-		}
+func runList(streams command.Streams, hubClient *hub.Client, opts commandutil.ListOptions) error {
+	if err := commandutil.UpdateAllElements(hubClient, opts.All); err != nil {
+		return err
 	}
 	tokens, total, err := hubClient.GetTokens()
 	if err != nil {
 		return err
 	}
-	return opts.Print(streams.Out(), tokens, printTokens(total))
-}
-
-func printTokens(total int) format.PrettyPrinter {
-	return func(out io.Writer, values interface{}) error {
-		tokens := values.([]hub.Token)
-		tw := tabwriter.New(out, "    ")
-		for _, column := range defaultColumns {
-			tw.Column(ansi.Header(column.header), len(column.header))
-		}
-
-		tw.Line()
-		for _, token := range tokens {
-			for _, column := range defaultColumns {
-				value, width := column.value(token)
-				tw.Column(value, width)
-			}
-			tw.Line()
-		}
-		if err := tw.Flush(); err != nil {
-			return err
-		}
-
-		if len(tokens) < total {
-			fmt.Fprintln(out, ansi.Info(fmt.Sprintf("%v/%v listed, use --all flag to show all", len(tokens), total)))
-		}
-		return nil
-	}
+	return opts.Print(streams.Out(), tokens, commandutil.PrettyTable(defaultColumns, total))
 }

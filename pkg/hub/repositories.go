@@ -17,16 +17,19 @@
 package hub
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"time"
+
+	hubapi "github.com/docker/hub-tool/pkg/hub/api"
 )
 
 const (
 	// RepositoriesURL is the Hub API base URL
-	RepositoriesURL = "/v2/repositories/"
+	RepositoriesURL = "/v2/namespaces/%s/repositories"
+	// RepositoryURL is the Hub API repository URL
+	RepositoryURL = "/v2/namespaces/%s/repositories/%s"
 )
 
 // Repository represents a Docker Hub repository
@@ -41,26 +44,31 @@ type Repository struct {
 
 // GetRepositories lists all the repositories a user can access
 func (c *Client) GetRepositories(account string) ([]Repository, int, error) {
+	return c.getRepositories(account, c.fetchAllElements)
+}
+
+func (c *Client) getRepositories(account string, fetchAll bool) ([]Repository, int, error) {
 	if account == "" {
 		account = c.account
 	}
-	repositoriesURL := fmt.Sprintf("%s%s%s", c.domain, RepositoriesURL, account)
-	u, err := url.Parse(repositoriesURL)
+	rawURL, err := paginatedURL(c.domain+fmt.Sprintf(RepositoriesURL, account), itemsPerPage)
 	if err != nil {
 		return nil, 0, err
 	}
-	q := url.Values{}
-	q.Add("page_size", fmt.Sprintf("%v", itemsPerPage))
-	q.Add("page", "1")
-	q.Add("ordering", "last_updated")
-	u.RawQuery = q.Encode()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, 0, err
+	}
+	values := u.Query()
+	values.Add("ordering", "last_updated")
+	u.RawQuery = values.Encode()
 
 	repos, total, next, err := c.getRepositoriesPage(u.String(), account)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	if c.fetchAllElements {
+	if fetchAll {
 		for next != "" {
 			pageRepos, _, n, err := c.getRepositoriesPage(next, account)
 			if err != nil {
@@ -74,9 +82,46 @@ func (c *Client) GetRepositories(account string) ([]Repository, int, error) {
 	return repos, total, nil
 }
 
+// GetAllRepositories lists all repositories for an account, following every page.
+func (c *Client) GetAllRepositories(account string) ([]Repository, int, error) {
+	return c.getRepositories(account, true)
+}
+
+// GetRepositoryStats returns total and private repository counts for an account.
+func (c *Client) GetRepositoryStats(account string) (int, int, error) {
+	if account == "" {
+		account = c.account
+	}
+	rawURL, err := paginatedURL(c.domain+fmt.Sprintf(RepositoriesURL, account), itemsPerPage)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	repos, total, next, err := c.getRepositoriesPage(rawURL, account)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	privateRepos := countPrivateRepositories(repos)
+	for next != "" {
+		pageRepos, _, n, err := c.getRepositoriesPage(next, account)
+		if err != nil {
+			return 0, 0, err
+		}
+		next = n
+		privateRepos += countPrivateRepositories(pageRepos)
+	}
+
+	return total, privateRepos, nil
+}
+
 // RemoveRepository removes a repository on Hub
 func (c *Client) RemoveRepository(repository string) error {
-	repositoryURL := fmt.Sprintf("%s%s%s/", c.domain, RepositoriesURL, repository)
+	namespace, name, err := getNamespaceRepository(repository)
+	if err != nil {
+		return err
+	}
+	repositoryURL := c.domain + fmt.Sprintf(RepositoryURL, namespace, name)
 	req, err := http.NewRequest(http.MethodDelete, repositoryURL, nil)
 	if err != nil {
 		return err
@@ -90,60 +135,42 @@ func (c *Client) RemoveRepository(repository string) error {
 }
 
 func (c *Client) getRepositoriesPage(url, account string) ([]Repository, int, string, error) {
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, 0, "", err
-	}
-	response, err := c.doRequest(req, withHubToken(c.token))
-	if err != nil {
-		return nil, 0, "", err
-	}
-	var hubResponse hubRepositoryResponse
-	if err := json.Unmarshal(response, &hubResponse); err != nil {
+	var hubResponse hubapi.ListRepositoriesResponse
+	if err := c.getJSON(url, &hubResponse); err != nil {
 		return nil, 0, "", err
 	}
 	var repos []Repository
-	for _, result := range hubResponse.Results {
+	if hubResponse.Results == nil {
+		return nil, ptrValue(hubResponse.Count), ptrValue(hubResponse.Next), nil
+	}
+	for _, result := range *hubResponse.Results {
 		repo := Repository{
-			Name:        fmt.Sprintf("%s/%s", account, result.Name),
-			Description: result.Description,
-			LastUpdated: result.LastUpdated,
-			PullCount:   result.PullCount,
-			StarCount:   result.StarCount,
-			IsPrivate:   result.IsPrivate,
+			Name:        fmt.Sprintf("%s/%s", account, ptrValue(result.Name)),
+			Description: ptrValue(result.Description),
+			LastUpdated: ptrValue(result.LastUpdated),
+			PullCount:   ptrValue(result.PullCount),
+			StarCount:   ptrValue(result.StarCount),
+			IsPrivate:   ptrValue(result.IsPrivate),
 		}
 		repos = append(repos, repo)
 	}
-	return repos, hubResponse.Count, hubResponse.Next, nil
+	return repos, ptrValue(hubResponse.Count), ptrValue(hubResponse.Next), nil
 }
 
-type hubRepositoryResponse struct {
-	Count    int                   `json:"count"`
-	Next     string                `json:"next,omitempty"`
-	Previous string                `json:"previous,omitempty"`
-	Results  []hubRepositoryResult `json:"results,omitempty"`
+func countPrivateRepositories(repos []Repository) int {
+	privateRepos := 0
+	for _, repo := range repos {
+		if repo.IsPrivate {
+			privateRepos++
+		}
+	}
+	return privateRepos
 }
 
-type hubRepositoryResult struct {
-	Name           string         `json:"name"`
-	Namespace      string         `json:"namespace"`
-	PullCount      int            `json:"pull_count"`
-	StarCount      int            `json:"star_count"`
-	RepositoryType RepositoryType `json:"repository_type"`
-	CanEdit        bool           `json:"can_edit"`
-	Description    string         `json:"description,omitempty"`
-	IsAutomated    bool           `json:"is_automated"`
-	IsMigrated     bool           `json:"is_migrated"`
-	IsPrivate      bool           `json:"is_private"`
-	LastUpdated    time.Time      `json:"last_updated"`
-	Status         int            `json:"status"`
-	User           string         `json:"user"`
+func ptrValue[T any](value *T) T {
+	if value == nil {
+		var zero T
+		return zero
+	}
+	return *value
 }
-
-// RepositoryType lists all the different repository types handled by the Docker Hub
-type RepositoryType string
-
-const (
-	//ImageType is the classic image type
-	ImageType = RepositoryType("image")
-)

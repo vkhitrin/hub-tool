@@ -17,10 +17,10 @@
 package org
 
 import (
-	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
 	"github.com/spf13/cobra"
 
+	"github.com/docker/hub-tool/internal/commands/commandutil"
 	"github.com/docker/hub-tool/pkg/hub"
 )
 
@@ -30,13 +30,7 @@ const (
 
 // NewOrgCmd configures the org manage command
 func NewOrgCmd(streams command.Streams, hubClient *hub.Client) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:                   orgName,
-		Short:                 "Manage organizations",
-		Args:                  cli.NoArgs,
-		DisableFlagsInUseLine: true,
-		RunE:                  command.ShowHelp(streams.Err()),
-	}
+	cmd := commandutil.NewParentCommand(streams, orgName, "Manage organizations", nil)
 	cmd.AddCommand(
 		newListCmd(streams, hubClient, orgName),
 		newMembersCmd(streams, hubClient, orgName),

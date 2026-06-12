@@ -43,8 +43,8 @@ func newLogoutCmd(streams command.Streams, store credentials.Store) *cobra.Comma
 			if err := store.Erase(); err != nil {
 				return err
 			}
-			fmt.Fprintln(streams.Out(), ansi.Info("Logout Succeeded"))
-			return nil
+			_, err := fmt.Fprintln(streams.Out(), ansi.Info("Logout Succeeded"))
+			return err
 		},
 	}
 	return cmd

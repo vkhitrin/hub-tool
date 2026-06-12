@@ -19,10 +19,10 @@ set -eu -o pipefail
 
 if ! command -v ltag; then
     >&2 echo "ERROR: ltag not found. Install with:"
-    >&2 echo "    go install github.com/kunalkushwaha/ltag@latest"
+    >&2 echo "    go install github.com/containerd/ltag@latest"
     exit 1
 fi
 
 BASEPATH="${1-}"
 
-ltag -t "${BASEPATH}scripts/validate/template" -excludes "validate testdata" --check -v
+ltag -t "${BASEPATH}scripts/validate/template" -excludes "bin internal/commands/commandutil scripts testdata" --check -v

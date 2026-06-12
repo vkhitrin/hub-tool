@@ -17,20 +17,18 @@
 package tag
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/distribution/reference"
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
+	"github.com/spf13/cobra"
+
 	"github.com/docker/hub-tool/internal/ansi"
-	"github.com/docker/hub-tool/internal/errdef"
-	"github.com/docker/hub-tool/internal/metrics"
+	"github.com/docker/hub-tool/internal/commands/commandutil"
 	"github.com/docker/hub-tool/pkg/hub"
 	"github.com/pkg/errors"
-	"github.com/spf13/cobra"
 )
 
 const (
@@ -43,24 +41,17 @@ type rmOptions struct {
 
 func newRmCmd(streams command.Streams, hubClient *hub.Client, parent string) *cobra.Command {
 	var opts rmOptions
-	cmd := &cobra.Command{
-		Use:                   rmName + " [OPTIONS] REPOSITORY:TAG",
-		Short:                 "Delete a tag in a repository",
-		Args:                  cli.ExactArgs(1),
-		DisableFlagsInUseLine: true,
-		PreRun: func(cmd *cobra.Command, args []string) {
-			metrics.Send(parent, rmName)
-		},
+	return commandutil.NewForceCommand(commandutil.CommandConfig{
+		Use:    rmName + " [OPTIONS] REPOSITORY:TAG",
+		Short:  "Delete a tag in a repository",
+		Args:   cli.ExactArgs(1),
+		Parent: parent,
+		Name:   rmName,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			err := runRm(cmd.Context(), streams, hubClient, opts, args[0])
-			if err == nil || errors.Is(err, errdef.ErrCanceled) {
-				return nil
-			}
-			return err
+			return commandutil.IgnoreCanceled(err)
 		},
-	}
-	cmd.Flags().BoolVarP(&opts.force, "force", "f", false, "Force deletion of the tag")
-	return cmd
+	}, &opts.force, "Force deletion of the tag")
 }
 
 func runRm(ctx context.Context, streams command.Streams, hubClient *hub.Client, opts rmOptions, image string) error {
@@ -75,29 +66,24 @@ func runRm(ctx context.Context, streams command.Streams, hubClient *hub.Client, 
 	}
 
 	if !opts.force {
-		fmt.Fprintln(streams.Out(), ansi.Warn(fmt.Sprintf(`WARNING: You are about to permanently delete image "%s:%s"`, reference.FamiliarName(ref), ref.Tag())))
-		fmt.Fprintln(streams.Out(), ansi.Warn("         This action is irreversible"))
-		fmt.Fprintf(streams.Out(), ansi.Info("Are you sure you want to delete the image tagged %q from repository %q? [y/N] "), ref.Tag(), reference.FamiliarName(ref))
-		userIn := make(chan string, 1)
-		go func() {
-			reader := bufio.NewReader(streams.In())
-			input, _ := reader.ReadString('\n')
-			userIn <- strings.ToLower(strings.TrimSpace(input))
-		}()
-		input := ""
-		select {
-		case <-ctx.Done():
-			return errdef.ErrCanceled
-		case input = <-userIn:
+		if _, err := fmt.Fprintln(streams.Out(), ansi.Warn(fmt.Sprintf(`WARNING: You are about to permanently delete image "%s:%s"`, reference.FamiliarName(ref), ref.Tag()))); err != nil {
+			return err
 		}
-		if strings.ToLower(input) != "y" {
-			return errors.New("deletion aborted")
+		if _, err := fmt.Fprintln(streams.Out(), ansi.Warn("         This action is irreversible")); err != nil {
+			return err
 		}
+		if _, err := fmt.Fprintf(streams.Out(), ansi.Info("Are you sure you want to delete the image tagged %q from repository %q? [y/N] "), ref.Tag(), reference.FamiliarName(ref)); err != nil {
+			return err
+		}
+	}
+	err = commandutil.ConfirmUnlessForced(ctx, streams.In(), opts.force, commandutil.YesConfirmation(errors.New("deletion aborted")))
+	if err != nil {
+		return err
 	}
 
 	if err := hubClient.RemoveTag(reference.FamiliarName(ref), ref.Tag()); err != nil {
 		return err
 	}
-	fmt.Fprintln(streams.Out(), "Deleted", image)
-	return nil
+	_, err = fmt.Fprintln(streams.Out(), "Deleted", image)
+	return err
 }

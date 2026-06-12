@@ -17,16 +17,12 @@
 package org
 
 import (
-	"io"
-
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
 	"github.com/spf13/cobra"
 
-	"github.com/docker/hub-tool/internal/ansi"
+	"github.com/docker/hub-tool/internal/commands/commandutil"
 	"github.com/docker/hub-tool/internal/format"
-	"github.com/docker/hub-tool/internal/format/tabwriter"
-	"github.com/docker/hub-tool/internal/metrics"
 	"github.com/docker/hub-tool/pkg/hub"
 )
 
@@ -35,16 +31,12 @@ const (
 )
 
 var (
-	memberColumns = []memberColumn{
-		{"USERNAME", func(m hub.Member) (string, int) { return m.Username, len(m.Username) }},
-		{"FULL NAME", func(m hub.Member) (string, int) { return m.FullName, len(m.FullName) }},
+	memberColumns = []commandutil.Column[hub.Member]{
+		commandutil.TextColumn("USERNAME", func(m hub.Member) string { return m.Username }),
+		commandutil.TextColumn("FULL NAME", func(m hub.Member) string { return m.FullName }),
+		commandutil.TextColumn("EMAIL", func(m hub.Member) string { return m.Email }),
 	}
 )
-
-type memberColumn struct {
-	header string
-	value  func(m hub.Member) (string, int)
-}
 
 type memberOptions struct {
 	format.Option
@@ -52,18 +44,16 @@ type memberOptions struct {
 
 func newMembersCmd(streams command.Streams, hubClient *hub.Client, parent string) *cobra.Command {
 	var opts memberOptions
-	cmd := &cobra.Command{
-		Use:                   membersName + " ORGANIZATION",
-		Short:                 "List all the members in an organization",
-		Args:                  cli.ExactArgs(1),
-		DisableFlagsInUseLine: true,
-		PreRun: func(cmd *cobra.Command, args []string) {
-			metrics.Send(parent, membersName)
-		},
+	cmd := commandutil.NewCommand(commandutil.CommandConfig{
+		Use:    membersName + " ORGANIZATION",
+		Short:  "List all the members in an organization",
+		Args:   cli.ExactArgs(1),
+		Parent: parent,
+		Name:   membersName,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMembers(streams, hubClient, opts, args[0])
 		},
-	}
+	})
 	opts.AddFormatFlag(cmd.Flags())
 	return cmd
 }
@@ -73,25 +63,5 @@ func runMembers(streams command.Streams, hubClient *hub.Client, opts memberOptio
 	if err != nil {
 		return err
 	}
-	return opts.Print(streams.Out(), members, printMembers)
-}
-
-func printMembers(out io.Writer, values interface{}) error {
-	members := values.([]hub.Member)
-	tw := tabwriter.New(out, "    ")
-	for _, column := range memberColumns {
-		tw.Column(ansi.Header(column.header), len(column.header))
-	}
-
-	tw.Line()
-
-	for _, member := range members {
-		for _, column := range memberColumns {
-			value, width := column.value(member)
-			tw.Column(value, width)
-		}
-		tw.Line()
-	}
-
-	return tw.Flush()
+	return opts.Print(streams.Out(), members, commandutil.PrettyTable(memberColumns))
 }

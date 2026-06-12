@@ -2,3 +2,4 @@ Dockerfile
 Makefile
 bin/
 dist/
+hub-tool

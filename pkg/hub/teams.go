@@ -18,12 +18,11 @@ package hub
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/url"
 	"sort"
+	"sync"
 
+	hubapi "github.com/docker/hub-tool/pkg/hub/api"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -41,16 +40,12 @@ type Team struct {
 
 // GetTeams lists all the teams in an organization
 func (c *Client) GetTeams(organization string) ([]Team, error) {
-	u, err := url.Parse(c.domain + fmt.Sprintf(GroupsURL, organization))
+	rawURL, err := paginatedURL(c.domain+fmt.Sprintf(GroupsURL, organization), itemsPerPage)
 	if err != nil {
 		return nil, err
 	}
-	q := url.Values{}
-	q.Add("page_size", fmt.Sprintf("%v", itemsPerPage))
-	q.Add("page", "1")
-	u.RawQuery = q.Encode()
 
-	teams, next, err := c.getTeamsPage(u.String(), organization)
+	teams, next, err := c.getTeamsPage(rawURL, organization)
 	if err != nil {
 		return nil, err
 	}
@@ -69,58 +64,43 @@ func (c *Client) GetTeams(organization string) ([]Team, error) {
 
 // GetTeamsCount returns the number of teams in an organization
 func (c *Client) GetTeamsCount(organization string) (int, error) {
-	u, err := url.Parse(c.domain + fmt.Sprintf(GroupsURL, organization))
+	rawURL, err := paginatedURL(c.domain+fmt.Sprintf(GroupsURL, organization), 1)
 	if err != nil {
 		return 0, err
 	}
-	q := url.Values{}
-	q.Add("page_size", "1")
-	q.Add("page", "1")
-	u.RawQuery = q.Encode()
-
-	req, err := http.NewRequest("GET", u.String(), nil)
-	if err != nil {
+	var hubResponse hubapi.OrgGroupPaginated
+	if err := c.getJSON(rawURL, &hubResponse); err != nil {
 		return 0, err
 	}
-	response, err := c.doRequest(req, withHubToken(c.token))
-	if err != nil {
-		return 0, err
-	}
-	var hubResponse hubGroupResponse
-	if err := json.Unmarshal(response, &hubResponse); err != nil {
-		return 0, err
-	}
-	return hubResponse.Count, nil
+	return ptrValue(hubResponse.Count), nil
 }
 
 func (c *Client) getTeamsPage(url, organization string) ([]Team, string, error) {
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
+	var hubResponse hubapi.OrgGroupPaginated
+	if err := c.getJSON(url, &hubResponse); err != nil {
 		return nil, "", err
 	}
-	response, err := c.doRequest(req, withHubToken(c.token))
-	if err != nil {
-		return nil, "", err
-	}
-	var hubResponse hubGroupResponse
-	if err := json.Unmarshal(response, &hubResponse); err != nil {
-		return nil, "", err
+	if hubResponse.Results == nil {
+		return nil, ptrValue(hubResponse.Next), nil
 	}
 	var teams []Team
+	var mu sync.Mutex
 	eg, _ := errgroup.WithContext(context.Background())
-	for _, result := range hubResponse.Results {
+	for _, result := range *hubResponse.Results {
 		result := result
 		eg.Go(func() error {
-			members, err := c.GetMembersPerTeam(organization, result.Name)
+			members, err := c.GetMembersPerTeam(organization, ptrValue(result.Name))
 			if err != nil {
 				return err
 			}
 			team := Team{
-				Name:        result.Name,
-				Description: result.Description,
+				Name:        ptrValue(result.Name),
+				Description: ptrValue(result.Description),
 				Members:     members,
 			}
+			mu.Lock()
 			teams = append(teams, team)
+			mu.Unlock()
 			return nil
 		})
 	}
@@ -133,18 +113,5 @@ func (c *Client) getTeamsPage(url, organization string) ([]Team, string, error) 
 		return teams[i].Name < teams[j].Name
 	})
 
-	return teams, hubResponse.Next, nil
-}
-
-type hubGroupResponse struct {
-	Count    int              `json:"count"`
-	Next     string           `json:"next,omitempty"`
-	Previous string           `json:"previous,omitempty"`
-	Results  []hubGroupResult `json:"results,omitempty"`
-}
-
-type hubGroupResult struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	ID          int    `json:"id"`
+	return teams, ptrValue(hubResponse.Next), nil
 }

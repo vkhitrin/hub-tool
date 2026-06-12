@@ -1,0 +1,169 @@
+#!/usr/bin/env ruby
+
+require "fileutils"
+require "open-uri"
+require "tmpdir"
+require "yaml"
+require "set"
+
+root = File.expand_path("..", __dir__)
+source = ENV.fetch("HUB_OPENAPI_SPEC_URL", "https://docs.docker.com/reference/api/hub/latest.yaml")
+config = File.join(root, "oapi-codegen.yaml")
+
+spec = URI.open(source) { |io| YAML.safe_load(io.read, aliases: true) }
+
+def normalize_schema_required(value)
+  case value
+  when Hash
+    schema_like = value.key?("type") || value.key?("properties") || value.key?("items") ||
+                  value.key?("$ref") || value.key?("allOf") || value.key?("oneOf") ||
+                  value.key?("anyOf")
+    value.delete("required") if schema_like && [true, false].include?(value["required"])
+    value.each_value { |child| normalize_schema_required(child) }
+  when Array
+    value.each { |child| normalize_schema_required(child) }
+  end
+end
+
+def schema_refs(value, refs = Set.new)
+  case value
+  when Hash
+    ref = value["$ref"]
+    refs << ref.split("/").last if ref&.start_with?("#/components/schemas/")
+    value.each_value { |child| schema_refs(child, refs) }
+  when Array
+    value.each { |child| schema_refs(child, refs) }
+  end
+  refs
+end
+
+Dir.mktmpdir("hub-tool-openapi-") do |dir|
+	normalized = File.join(dir, "latest.yaml")
+	normalize_schema_required(spec)
+	if spec.dig("components", "schemas", "team_repo", "allOf")
+		spec["components"]["schemas"]["team_repo"].delete("allOf")
+	end
+	if spec.dig("components", "schemas", "error")
+		spec["components"]["schemas"]["error"]["x-go-name"] = "APIError"
+	end
+	if spec.dig("components", "schemas", "bulk_invite")
+		spec["components"]["schemas"]["bulk_invite"]["x-go-name"] = "BulkInviteRequest"
+	end
+	if spec.dig("components", "schemas", "page")
+		spec["components"]["schemas"]["page"]["x-go-name"] = "PageInfo"
+	end
+	schemas = spec.dig("components", "schemas") || {}
+	if schemas.dig("PostUsersLoginSuccessResponse", "properties")
+		schemas["PostUsersLoginSuccessResponse"]["properties"]["refresh_token"] = {
+			"type" => "string",
+			"description" => "Created refresh token."
+		}
+	end
+	if schemas.dig("getAccessTokensResponse", "properties", "results")
+		schemas["getAccessTokensResponse"]["properties"]["results"] = {
+			"type" => "array",
+			"items" => { "$ref" => "#/components/schemas/accessToken" }
+		}
+	end
+	if schemas["group_member"]
+		schemas["org_member"] = schemas["group_member"]
+	end
+	if schemas["org_group"]
+		schemas["org_group_paginated"] = {
+			"type" => "object",
+			"properties" => {
+				"count" => { "type" => "integer" },
+				"next" => { "type" => "string", "nullable" => true },
+				"previous" => { "type" => "string", "nullable" => true },
+				"results" => {
+					"type" => "array",
+					"items" => { "$ref" => "#/components/schemas/org_group" }
+				}
+			}
+		}
+	end
+	schemas["user_org"] = {
+		"type" => "object",
+		"properties" => {
+			"company" => { "type" => "string" },
+			"date_joined" => { "type" => "string", "format" => "date-time" },
+			"full_name" => { "type" => "string" },
+			"gravatar_email" => { "type" => "string" },
+			"gravatar_url" => { "type" => "string" },
+			"id" => { "type" => "string" },
+			"location" => { "type" => "string" },
+			"orgname" => { "type" => "string" },
+			"profile_url" => { "type" => "string" },
+			"type" => { "type" => "string" }
+		}
+	}
+	schemas["user_org_paginated"] = {
+		"type" => "object",
+		"properties" => {
+			"count" => { "type" => "integer" },
+			"next" => { "type" => "string", "nullable" => true },
+			"previous" => { "type" => "string", "nullable" => true },
+			"results" => {
+				"type" => "array",
+				"items" => { "$ref" => "#/components/schemas/user_org" }
+			}
+		}
+	}
+	schemas["hub_plan"] = {
+		"type" => "object",
+		"properties" => {
+			"name" => { "type" => "string" },
+			"legacy" => { "type" => "boolean" },
+			"seats" => { "type" => "integer" },
+			"private_repos" => { "type" => "integer" },
+			"teams" => { "type" => "integer" },
+			"collaborators" => { "type" => "integer" },
+			"parallel_builds" => { "type" => "integer" },
+			"duration" => { "type" => "string" }
+		}
+	}
+	keep = Set.new(%w[
+		PostUsers2FALoginErrorResponse
+		PostUsersLoginErrorResponse
+		PostUsersLoginSuccessResponse
+		Users2FALoginRequest
+		UsersLoginRequest
+		accessToken
+		createAccessTokenRequest
+		createAccessTokensResponse
+		getAccessTokensResponse
+		group_member
+		hub_plan
+		image
+		list_repositories_response
+		org_group
+		org_group_paginated
+		org_member
+		org_member_paginated
+		paginated_tags
+		patchAccessTokenRequest
+		patchAccessTokenResponse
+		repository_info
+		repository_list_entry
+		tag
+		user
+		user_org
+		user_org_paginated
+	])
+	pending = keep.to_a
+	until pending.empty?
+		name = pending.shift
+		next unless schemas[name]
+		schema_refs(schemas[name]).each do |ref|
+			next if keep.include?(ref)
+			keep << ref
+			pending << ref
+		end
+	end
+	spec["components"]["schemas"] = schemas.select { |name, _| keep.include?(name) }
+	spec["components"].select! { |name, _| name == "schemas" }
+	spec["paths"] = {}
+	File.write(normalized, YAML.dump(spec))
+	Dir.chdir(root)
+	exec("go", "run", "github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.4.1", "-config", config, normalized)
+end

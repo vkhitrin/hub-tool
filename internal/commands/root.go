@@ -94,8 +94,8 @@ Please login to Docker Hub using the "hub-tool login" command.`))
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if flags.showVersion {
-				fmt.Fprintf(streams.Out(), "Docker Hub Tool %s, build %s\n", internal.Version, internal.GitCommit[:7])
-				return nil
+				_, err := fmt.Fprintf(streams.Out(), "Docker Hub Tool %s, build %s\n", internal.Version, internal.GitCommit[:7])
+				return err
 			}
 			return cmd.Help()
 		},
@@ -144,14 +144,5 @@ func tryLogin(ctx context.Context, streams command.Streams, hubClient *hub.Clien
 	if err != nil {
 		return err
 	}
-	if err := hubClient.Update(hub.WithHubToken(token)); err != nil {
-		return err
-	}
-
-	return store.Store(credentials.Auth{
-		Username:     ac.Username,
-		Password:     ac.Password,
-		Token:        token,
-		RefreshToken: refreshToken,
-	})
+	return credentials.StoreLogin(hubClient, store, ac.Username, ac.Password, token, refreshToken)
 }

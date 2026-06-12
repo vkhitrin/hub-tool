@@ -18,6 +18,7 @@ package account
 
 import (
 	"bytes"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -30,31 +31,79 @@ import (
 func TestInfoOutput(t *testing.T) {
 	account := account{
 		Account: &hub.Account{
-			ID:       "id",
-			Name:     "my-user-name",
-			FullName: "My Full Name",
-			Location: "MyLocation",
-			Company:  "My Company",
-			Joined:   time.Now(),
-		},
-		Plan: &hub.Plan{
-			Name: "free",
-			Limits: hub.Limits{
-				Seats:          1,
-				PrivateRepos:   2,
-				Teams:          9999,
-				Collaborators:  9999,
-				ParallelBuilds: 3,
-			},
+			ID:         "id",
+			Name:       "my-user-name",
+			FullName:   "My Full Name",
+			Location:   "MyLocation",
+			Company:    "My Company",
+			Joined:     time.Now(),
+			Type:       "User",
+			ProfileURL: "https://hub.docker.com/u/my-user-name",
 		},
 		Consumption: &hub.Consumption{
 			Seats:               0,
+			Repositories:        4,
 			PrivateRepositories: 1,
 			Teams:               2,
+		},
+		Organizations: []hub.Organization{
+			{
+				Namespace:    "my-org",
+				FullName:     "My Org",
+				Role:         "Owner",
+				Repositories: 7,
+				PublicRepos:  5,
+				PrivateRepos: 2,
+				Repos:        []hub.Repository{{Name: "my-org/my-repo", IsPrivate: false}},
+				Teams:        []hub.Team{{Name: "owners"}},
+				Members:      []hub.Member{{Username: "my-user-name", Email: "me@example.com"}},
+			},
 		},
 	}
 	buf := bytes.NewBuffer(nil)
 	err := printAccount(buf, account)
 	assert.NilError(t, err)
 	golden.Assert(t, buf.String(), "info.golden")
+}
+
+func TestInfoJSONIncludesMemberEmail(t *testing.T) {
+	value := account{
+		Account:     &hub.Account{Name: "my-user-name"},
+		Consumption: &hub.Consumption{},
+		Organizations: []hub.Organization{
+			{
+				Namespace: "my-org",
+				Members: []hub.Member{
+					{Username: "my-user-name", Email: "me@example.com"},
+				},
+			},
+		},
+	}
+
+	data, err := json.Marshal(value)
+	assert.NilError(t, err)
+	assert.Check(t, bytes.Contains(data, []byte(`"email":"me@example.com"`)))
+}
+
+func TestInfoOrgUsageOutput(t *testing.T) {
+	value := account{
+		Account: &hub.Account{
+			Name:   "my-org",
+			Joined: time.Now(),
+			Type:   "Organization",
+		},
+		Consumption: &hub.Consumption{
+			Seats:               3,
+			Teams:               2,
+			Repositories:        4,
+			PrivateRepositories: 1,
+		},
+	}
+
+	buf := bytes.NewBuffer(nil)
+	err := printAccount(buf, value)
+	assert.NilError(t, err)
+	assert.Check(t, bytes.Contains(buf.Bytes(), []byte("  Members:")))
+	assert.Check(t, bytes.Contains(buf.Bytes(), []byte("  Teams:")))
+	assert.Check(t, !bytes.Contains(buf.Bytes(), []byte("  Seats:")))
 }

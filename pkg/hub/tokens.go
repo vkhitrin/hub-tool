@@ -20,18 +20,19 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"net/url"
 	"time"
 
+	hubapi "github.com/docker/hub-tool/pkg/hub/api"
 	"github.com/google/uuid"
 )
 
 const (
 	// TokensURL path to the Hub API listing the Personal Access Tokens
-	TokensURL = "/v2/api_tokens"
+	TokensURL = "/v2/access-tokens"
 	// TokenURL path to the Hub API Personal Access Token
-	TokenURL = "/v2/api_tokens/%s"
+	TokenURL = "/v2/access-tokens/%s"
 )
 
 // Token is a personal access token. The token field will only be filled at creation and can never been accessed again.
@@ -50,42 +51,24 @@ type Token struct {
 
 // CreateToken creates a Personal Access Token and returns the token field only once
 func (c *Client) CreateToken(description string) (*Token, error) {
-	data, err := json.Marshal(hubTokenRequest{Description: description})
+	data, err := json.Marshal(hubapi.CreateAccessTokenRequest{
+		TokenLabel: description,
+		Scopes:     []string{"repo:write"},
+	})
 	if err != nil {
 		return nil, err
 	}
-	body := bytes.NewBuffer(data)
-	req, err := http.NewRequest("POST", c.domain+TokensURL, body)
-	if err != nil {
-		return nil, err
-	}
-	response, err := c.doRequest(req, withHubToken(c.token))
-	if err != nil {
-		return nil, err
-	}
-	var tokenResponse hubTokenResult
-	if err := json.Unmarshal(response, &tokenResponse); err != nil {
-		return nil, err
-	}
-	token, err := convertToken(tokenResponse)
-	if err != nil {
-		return nil, err
-	}
-	return &token, nil
+	return c.doTokenRequest(http.MethodPost, c.domain+TokensURL, bytes.NewBuffer(data))
 }
 
 // GetTokens calls the hub repo API and returns all the information on all tokens
 func (c *Client) GetTokens() ([]Token, int, error) {
-	u, err := url.Parse(c.domain + TokensURL)
+	rawURL, err := paginatedURL(c.domain+TokensURL, itemsPerPage)
 	if err != nil {
 		return nil, 0, err
 	}
-	q := url.Values{}
-	q.Add("page_size", fmt.Sprintf("%v", itemsPerPage))
-	q.Add("page", "1")
-	u.RawQuery = q.Encode()
 
-	tokens, total, next, err := c.getTokensPage(u.String())
+	tokens, total, next, err := c.getTokensPage(rawURL)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -105,37 +88,24 @@ func (c *Client) GetTokens() ([]Token, int, error) {
 
 // GetToken calls the hub repo API and returns the information on one token
 func (c *Client) GetToken(tokenUUID string) (*Token, error) {
-	req, err := http.NewRequest("GET", c.domain+fmt.Sprintf(TokenURL, tokenUUID), nil)
-	if err != nil {
-		return nil, err
-	}
-	response, err := c.doRequest(req, withHubToken(c.token))
-	if err != nil {
-		return nil, err
-	}
-	var tokenResponse hubTokenResult
-	if err := json.Unmarshal(response, &tokenResponse); err != nil {
-		return nil, err
-	}
-	token, err := convertToken(tokenResponse)
-	if err != nil {
-		return nil, err
-	}
-	return &token, nil
+	return c.doTokenRequest(http.MethodGet, c.domain+fmt.Sprintf(TokenURL, tokenUUID), nil)
 }
 
 // UpdateToken updates a token's description and activeness
 func (c *Client) UpdateToken(tokenUUID, description string, isActive bool) (*Token, error) {
-	tokenRequest := hubTokenRequest{IsActive: isActive}
+	tokenRequest := hubapi.PatchAccessTokenRequest{IsActive: &isActive}
 	if description != "" {
-		tokenRequest.Description = description
+		tokenRequest.TokenLabel = &description
 	}
 	data, err := json.Marshal(tokenRequest)
 	if err != nil {
 		return nil, err
 	}
-	body := bytes.NewBuffer(data)
-	req, err := http.NewRequest("PATCH", c.domain+fmt.Sprintf(TokenURL, tokenUUID), body)
+	return c.doTokenRequest(http.MethodPatch, c.domain+fmt.Sprintf(TokenURL, tokenUUID), bytes.NewBuffer(data))
+}
+
+func (c *Client) doTokenRequest(method, url string, body io.Reader) (*Token, error) {
+	req, err := http.NewRequest(method, url, body)
 	if err != nil {
 		return nil, err
 	}
@@ -143,92 +113,76 @@ func (c *Client) UpdateToken(tokenUUID, description string, isActive bool) (*Tok
 	if err != nil {
 		return nil, err
 	}
-	var tokenResponse hubTokenResult
-	if err := json.Unmarshal(response, &tokenResponse); err != nil {
-		return nil, err
-	}
-	token, err := convertToken(tokenResponse)
-	if err != nil {
-		return nil, err
-	}
-	return &token, nil
+	return decodeToken(response)
 }
 
 // RemoveToken deletes a token from personal access token
 func (c *Client) RemoveToken(tokenUUID string) error {
 	//DELETE https://hub.docker.com/v2/api_tokens/8208674e-d08a-426f-b6f4-e3aba7058459 => 202
-	req, err := http.NewRequest("DELETE", c.domain+fmt.Sprintf(TokenURL, tokenUUID), nil)
-	if err != nil {
-		return err
-	}
-	_, err = c.doRequest(req, withHubToken(c.token))
-	return err
+	return c.deleteHubResource(c.domain + fmt.Sprintf(TokenURL, tokenUUID))
 }
 
 func (c *Client) getTokensPage(url string) ([]Token, int, string, error) {
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, 0, "", err
-	}
-	response, err := c.doRequest(req, withHubToken(c.token))
-	if err != nil {
-		return nil, 0, "", err
-	}
-	var hubResponse hubTokenResponse
-	if err := json.Unmarshal(response, &hubResponse); err != nil {
+	var hubResponse hubapi.GetAccessTokensResponse
+	if err := c.getJSON(url, &hubResponse); err != nil {
 		return nil, 0, "", err
 	}
 	var tokens []Token
-	for _, result := range hubResponse.Results {
+	if hubResponse.Results == nil {
+		return nil, int(ptrValue(hubResponse.Count)), ptrValue(hubResponse.Next), nil
+	}
+	for _, result := range *hubResponse.Results {
 		token, err := convertToken(result)
 		if err != nil {
 			return nil, 0, "", err
 		}
 		tokens = append(tokens, token)
 	}
-	return tokens, hubResponse.Count, hubResponse.Next, nil
+	return tokens, int(ptrValue(hubResponse.Count)), ptrValue(hubResponse.Next), nil
 }
 
-type hubTokenRequest struct {
-	Description string `json:"token_label,omitempty"`
-	IsActive    bool   `json:"is_active"`
+func decodeToken(response []byte) (*Token, error) {
+	var tokenResponse hubapi.AccessToken
+	if err := json.Unmarshal(response, &tokenResponse); err != nil {
+		return nil, err
+	}
+	token, err := convertToken(tokenResponse)
+	if err != nil {
+		return nil, err
+	}
+	return &token, nil
 }
 
-type hubTokenResponse struct {
-	Count    int              `json:"count"`
-	Next     string           `json:"next,omitempty"`
-	Previous string           `json:"previous,omitempty"`
-	Results  []hubTokenResult `json:"results,omitempty"`
-}
-
-type hubTokenResult struct {
-	UUID        string    `json:"uuid"`
-	ClientID    string    `json:"client_id"`
-	CreatorIP   string    `json:"creator_ip"`
-	CreatorUA   string    `json:"creator_ua"`
-	CreatedAt   time.Time `json:"created_at"`
-	LastUsed    time.Time `json:"last_used,omitempty"`
-	GeneratedBy string    `json:"generated_by"`
-	IsActive    bool      `json:"is_active"`
-	Token       string    `json:"token"`
-	TokenLabel  string    `json:"token_label"`
-}
-
-func convertToken(response hubTokenResult) (Token, error) {
-	u, err := uuid.Parse(response.UUID)
+func convertToken(response hubapi.AccessToken) (Token, error) {
+	u, err := uuid.Parse(ptrValue(response.Uuid))
+	if err != nil {
+		return Token{}, err
+	}
+	createdAt, err := parseAPITime(ptrValue(response.CreatedAt))
+	if err != nil {
+		return Token{}, err
+	}
+	lastUsed, err := parseAPITime(ptrValue(response.LastUsed))
 	if err != nil {
 		return Token{}, err
 	}
 	return Token{
 		UUID:        u,
-		ClientID:    response.ClientID,
-		CreatorIP:   response.CreatorIP,
-		CreatorUA:   response.CreatorUA,
-		CreatedAt:   response.CreatedAt,
-		LastUsed:    response.LastUsed,
-		GeneratedBy: response.GeneratedBy,
-		IsActive:    response.IsActive,
-		Token:       response.Token,
-		Description: response.TokenLabel,
+		ClientID:    ptrValue(response.ClientId),
+		CreatorIP:   ptrValue(response.CreatorIp),
+		CreatorUA:   ptrValue(response.CreatorUa),
+		CreatedAt:   createdAt,
+		LastUsed:    lastUsed,
+		GeneratedBy: ptrValue(response.GeneratedBy),
+		IsActive:    ptrValue(response.IsActive),
+		Token:       ptrValue(response.Token),
+		Description: ptrValue(response.TokenLabel),
 	}, nil
+}
+
+func parseAPITime(value string) (time.Time, error) {
+	if value == "" {
+		return time.Time{}, nil
+	}
+	return time.Parse(time.RFC3339Nano, value)
 }

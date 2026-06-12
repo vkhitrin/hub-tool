@@ -17,10 +17,10 @@
 package tag
 
 import (
-	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
 	"github.com/spf13/cobra"
 
+	"github.com/docker/hub-tool/internal/commands/commandutil"
 	"github.com/docker/hub-tool/pkg/hub"
 )
 
@@ -30,12 +30,7 @@ const (
 
 // NewTagCmd configures the tag manage command
 func NewTagCmd(streams command.Streams, hubClient *hub.Client) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   tagName,
-		Short: "Manage tags",
-		Args:  cli.NoArgs,
-		RunE:  command.ShowHelp(streams.Err()),
-	}
+	cmd := commandutil.NewParentCommand(streams, tagName, "Manage tags", nil)
 	cmd.AddCommand(
 		newInspectCmd(streams, hubClient, tagName),
 		newListCmd(streams, hubClient, tagName),

@@ -59,8 +59,8 @@ func newLoginCmd(streams command.Streams, store credentials.Store, hubClient *hu
 				return err
 			}
 
-			fmt.Fprintln(streams.Out(), ansi.Info("Login Succeeded"))
-			return nil
+			_, err = fmt.Fprintln(streams.Out(), ansi.Info("Login Succeeded"))
+			return err
 		},
 	}
 	return cmd

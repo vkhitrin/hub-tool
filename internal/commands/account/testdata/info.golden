@@ -1,12 +1,14 @@
 Name:		my-user-name
+ID:		id
+Type:		User
 Full name:	My Full Name
 Company:	My Company
 Location:	MyLocation
+Profile URL:	https://hub.docker.com/u/my-user-name
 Joined:		Less than a second ago
-Plan:		free
-Limits:
-  Seats:		0/1
-  Private repositories:	1/2
-  Teams:		unlimited
-  Collaborators:	unlimited
-  Parallel builds:	3
+Usage:
+  Repositories:		4
+  Public repositories:	3
+  Private repositories:	1
+Organizations:
+  my-org (My Org)          Owner    repos=7    public=5    private=2    teams=1    members=1

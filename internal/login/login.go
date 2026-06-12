@@ -55,16 +55,7 @@ func RunLogin(ctx context.Context, streams command.Streams, hubClient *hub.Clien
 		return err
 	}
 
-	if err := hubClient.Update(hub.WithHubToken(token)); err != nil {
-		return err
-	}
-
-	return store.Store(credentials.Auth{
-		Username:     username,
-		Password:     password,
-		Token:        token,
-		RefreshToken: refreshToken,
-	})
+	return credentials.StoreLogin(hubClient, store, username, password, token, refreshToken)
 }
 
 // Login runs login and optionnaly the 2FA
@@ -77,7 +68,7 @@ func Login(ctx context.Context, streams command.Streams, hubClient *hub.Client, 
 func readClearText(ctx context.Context, streams command.Streams, prompt string) (string, error) {
 	userIn := make(chan string, 1)
 	go func() {
-		fmt.Fprint(streams.Out(), ansi.Info(prompt))
+		_, _ = fmt.Fprint(streams.Out(), ansi.Info(prompt))
 		reader := bufio.NewReader(streams.In())
 		input, _ := reader.ReadString('\n')
 		userIn <- strings.TrimSpace(input)
@@ -113,13 +104,13 @@ func readPassword(streams command.Streams) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	fmt.Fprint(streams.Out(), ansi.Info("Password: "))
+	_, _ = fmt.Fprint(streams.Out(), ansi.Info("Password: "))
 	if err := term.DisableEcho(in.FD(), oldState); err != nil {
 		return "", err
 	}
 
 	password := readInput(in, streams.Out())
-	fmt.Fprint(streams.Out(), "\n")
+	_, _ = fmt.Fprint(streams.Out(), "\n")
 
 	if err := term.RestoreTerminal(in.FD(), oldState); err != nil {
 		return "", err
@@ -135,7 +126,7 @@ func readInput(in io.Reader, out io.Writer) string {
 	reader := bufio.NewReader(in)
 	line, _, err := reader.ReadLine()
 	if err != nil {
-		fmt.Fprintln(out, err.Error())
+		_, _ = fmt.Fprintln(out, err.Error())
 		os.Exit(1)
 	}
 	return string(line)

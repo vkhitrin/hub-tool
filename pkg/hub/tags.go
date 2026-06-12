@@ -20,17 +20,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
+	"strings"
 	"time"
 
 	"github.com/distribution/reference"
+	hubapi "github.com/docker/hub-tool/pkg/hub/api"
 )
 
 const (
 	// TagsURL path to the Hub API listing the tags
-	TagsURL = "/v2/repositories/%s/tags/"
+	TagsURL = "/v2/namespaces/%s/repositories/%s/tags"
 	// DeleteTagURL path to the Hub API to remove a tag
-	DeleteTagURL = "/v2/repositories/%s/tags/%s/"
+	DeleteTagURL = "/v2/namespaces/%s/repositories/%s/tags/%s"
 )
 
 // Tag can point to a manifest or manifest list
@@ -59,20 +60,16 @@ type Image struct {
 
 // GetTags calls the hub repo API and returns all the information on all tags
 func (c *Client) GetTags(repository string, reqOps ...RequestOp) ([]Tag, int, error) {
-	repoPath, err := getRepoPath(repository)
+	namespace, name, err := getNamespaceRepository(repository)
 	if err != nil {
 		return nil, 0, err
 	}
-	u, err := url.Parse(c.domain + fmt.Sprintf(TagsURL, repoPath))
+	rawURL, err := paginatedURL(c.domain+fmt.Sprintf(TagsURL, namespace, name), itemsPerPage)
 	if err != nil {
 		return nil, 0, err
 	}
-	q := url.Values{}
-	q.Add("page_size", fmt.Sprintf("%v", itemsPerPage))
-	q.Add("page", "1")
-	u.RawQuery = q.Encode()
 
-	tags, total, next, err := c.getTagsPage(u.String(), repository, reqOps...)
+	tags, total, next, err := c.getTagsPage(rawURL, repository, reqOps...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -92,80 +89,101 @@ func (c *Client) GetTags(repository string, reqOps ...RequestOp) ([]Tag, int, er
 
 // RemoveTag removes a tag in a repository on Hub
 func (c *Client) RemoveTag(repository, tag string) error {
-	req, err := http.NewRequest("DELETE", c.domain+fmt.Sprintf(DeleteTagURL, repository, tag), nil)
+	namespace, name, err := getNamespaceRepository(repository)
 	if err != nil {
 		return err
 	}
-	_, err = c.doRequest(req, withHubToken(c.token))
-	return err
+	return c.deleteHubResource(c.domain + fmt.Sprintf(DeleteTagURL, namespace, name, tag))
 }
 
 func (c *Client) getTagsPage(url, repository string, reqOps ...RequestOp) ([]Tag, int, string, error) {
-	req, err := http.NewRequest("GET", url, nil)
+	var hubResponse hubapi.PaginatedTags
+	response, err := c.getTagPageResponse(url, reqOps...)
 	if err != nil {
 		return nil, 0, "", err
 	}
-	response, err := c.doRequest(req, append(reqOps, withHubToken(c.token))...)
-	if err != nil {
-		return nil, 0, "", err
-	}
-	var hubResponse hubTagResponse
-	if err := json.Unmarshal(response, &hubResponse); err != nil {
+	if err := json.Unmarshal(normalizeTagPageResponse(response), &hubResponse); err != nil {
 		return nil, 0, "", err
 	}
 	var tags []Tag
-	for _, result := range hubResponse.Results {
+	if hubResponse.Results == nil {
+		return nil, ptrValue(hubResponse.Count), ptrValue(hubResponse.Next), nil
+	}
+	for _, result := range *hubResponse.Results {
+		lastUpdated, err := parseAPITime(ptrValue(result.LastUpdated))
+		if err != nil {
+			return nil, 0, "", err
+		}
+		lastPulled, err := parseAPITime(ptrValue(result.TagLastPulled))
+		if err != nil {
+			return nil, 0, "", err
+		}
+		lastPushed, err := parseAPITime(ptrValue(result.TagLastPushed))
+		if err != nil {
+			return nil, 0, "", err
+		}
 		tag := Tag{
-			Name:                fmt.Sprintf("%s:%s", repository, result.Name),
-			FullSize:            result.FullSize,
-			LastUpdated:         result.LastUpdated,
-			LastUpdaterUserName: result.LastUpdaterUserName,
+			Name:                fmt.Sprintf("%s:%s", repository, ptrValue(result.Name)),
+			FullSize:            ptrValue(result.FullSize),
+			LastUpdated:         lastUpdated,
+			LastUpdaterUserName: ptrValue(result.LastUpdaterUsername),
 			Images:              toImages(result.Images),
-			Status:              result.Status,
-			LastPulled:          result.LastPulled,
-			LastPushed:          result.LastPushed,
+			Status:              string(ptrValue(result.Status)),
+			LastPulled:          lastPulled,
+			LastPushed:          lastPushed,
 		}
 		tags = append(tags, tag)
 	}
-	return tags, hubResponse.Count, hubResponse.Next, nil
+	return tags, ptrValue(hubResponse.Count), ptrValue(hubResponse.Next), nil
 }
 
-type hubTagResponse struct {
-	Count    int            `json:"count"`
-	Next     string         `json:"next,omitempty"`
-	Previous string         `json:"previous,omitempty"`
-	Results  []hubTagResult `json:"results,omitempty"`
+func (c *Client) getTagPageResponse(url string, reqOps ...RequestOp) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return c.doRequest(req, append(reqOps, withHubToken(c.token))...)
 }
 
-type hubTagResult struct {
-	Creator             int           `json:"creator"`
-	ID                  int           `json:"id"`
-	Name                string        `json:"name"`
-	ImageID             string        `json:"image_id,omitempty"`
-	LastUpdated         time.Time     `json:"last_updated"`
-	LastUpdater         int           `json:"last_updater"`
-	LastUpdaterUserName string        `json:"last_updater_username"`
-	Images              []hubTagImage `json:"images,omitempty"`
-	Repository          int           `json:"repository"`
-	FullSize            int           `json:"full_size"`
-	V2                  bool          `json:"v2"`
-	LastPulled          time.Time     `json:"tag_last_pulled,omitempty"`
-	LastPushed          time.Time     `json:"tag_last_pushed,omitempty"`
-	Status              string        `json:"tag_status,omitempty"`
+func normalizeTagPageResponse(response []byte) []byte {
+	var page map[string]interface{}
+	if err := json.Unmarshal(response, &page); err != nil {
+		return response
+	}
+	results, ok := page["results"].([]interface{})
+	if !ok {
+		return response
+	}
+	for _, result := range results {
+		tag, ok := result.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		normalizeTagResponse(tag)
+	}
+	normalized, err := json.Marshal(page)
+	if err != nil {
+		return response
+	}
+	return normalized
 }
 
-type hubTagImage struct {
-	Architecture string    `json:"architecture"`
-	Os           string    `json:"os"`
-	Features     string    `json:"features,omitempty"`
-	Variant      string    `json:"variant,omitempty"`
-	Digest       string    `json:"digest"`
-	OsFeatures   string    `json:"os_features,omitempty"`
-	OsVersion    string    `json:"os_version,omitempty"`
-	Size         int       `json:"size"`
-	LastPulled   time.Time `json:"last_pulled,omitempty"`
-	LastPushed   time.Time `json:"last_pushed,omitempty"`
-	Status       string    `json:"status,omitempty"`
+func normalizeTagResponse(tag map[string]interface{}) {
+	if v2, ok := tag["v2"].(bool); ok {
+		tag["v2"] = fmt.Sprintf("%v", v2)
+	}
+	if _, ok := tag["status"]; !ok {
+		if status, ok := tag["tag_status"]; ok {
+			tag["status"] = status
+		}
+	}
+	if images, ok := tag["images"].([]interface{}); ok {
+		if len(images) == 0 {
+			delete(tag, "images")
+			return
+		}
+		tag["images"] = images[0]
+	}
 }
 
 func getRepoPath(s string) (string, error) {
@@ -178,19 +196,32 @@ func getRepoPath(s string) (string, error) {
 	return reference.Path(ref), nil
 }
 
-func toImages(result []hubTagImage) []Image {
-	images := make([]Image, len(result))
-	for i := range result {
-		images[i] = Image{
-			Digest:       result[i].Digest,
-			Architecture: result[i].Architecture,
-			Os:           result[i].Os,
-			Variant:      result[i].Variant,
-			Size:         result[i].Size,
-			Status:       result[i].Status,
-			LastPulled:   result[i].LastPulled,
-			LastPushed:   result[i].LastPushed,
-		}
+func getNamespaceRepository(s string) (string, string, error) {
+	repoPath, err := getRepoPath(s)
+	if err != nil {
+		return "", "", err
 	}
-	return images
+	parts := strings.Split(repoPath, "/")
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid reference: expected namespace/repository")
+	}
+	return parts[0], parts[1], nil
+}
+
+func toImages(result *hubapi.Image) []Image {
+	if result == nil {
+		return nil
+	}
+	lastPulled, _ := parseAPITime(ptrValue(result.LastPulled))
+	lastPushed, _ := parseAPITime(ptrValue(result.LastPushed))
+	return []Image{{
+		Digest:       ptrValue(result.Digest),
+		Architecture: ptrValue(result.Architecture),
+		Os:           ptrValue(result.Os),
+		Variant:      ptrValue(result.Variant),
+		Size:         ptrValue(result.Size),
+		Status:       string(ptrValue(result.Status)),
+		LastPulled:   lastPulled,
+		LastPushed:   lastPushed,
+	}}
 }

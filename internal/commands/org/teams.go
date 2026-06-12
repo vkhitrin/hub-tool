@@ -17,17 +17,12 @@
 package org
 
 import (
-	"fmt"
-	"io"
-
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
 	"github.com/spf13/cobra"
 
-	"github.com/docker/hub-tool/internal/ansi"
+	"github.com/docker/hub-tool/internal/commands/commandutil"
 	"github.com/docker/hub-tool/internal/format"
-	"github.com/docker/hub-tool/internal/format/tabwriter"
-	"github.com/docker/hub-tool/internal/metrics"
 	"github.com/docker/hub-tool/pkg/hub"
 )
 
@@ -36,20 +31,12 @@ const (
 )
 
 var (
-	teamsColumns = []teamColumn{
-		{"TEAM", func(t hub.Team) (string, int) { return t.Name, len(t.Name) }},
-		{"DESCRIPTION", func(t hub.Team) (string, int) { return t.Description, len(t.Description) }},
-		{"MEMBERS", func(t hub.Team) (string, int) {
-			s := fmt.Sprintf("%v", len(t.Members))
-			return s, len(s)
-		}},
+	teamsColumns = []commandutil.Column[hub.Team]{
+		commandutil.TextColumn("TEAM", func(t hub.Team) string { return t.Name }),
+		commandutil.TextColumn("DESCRIPTION", func(t hub.Team) string { return t.Description }),
+		commandutil.IntColumn("MEMBERS", func(t hub.Team) int { return len(t.Members) }),
 	}
 )
-
-type teamColumn struct {
-	header string
-	value  func(t hub.Team) (string, int)
-}
 
 type teamsOptions struct {
 	format.Option
@@ -57,18 +44,16 @@ type teamsOptions struct {
 
 func newTeamsCmd(streams command.Streams, hubClient *hub.Client, parent string) *cobra.Command {
 	var opts teamsOptions
-	cmd := &cobra.Command{
-		Use:                   teamsName + " ORGANIZATION",
-		Short:                 "List all the teams in an organization",
-		Args:                  cli.ExactArgs(1),
-		DisableFlagsInUseLine: true,
-		PreRun: func(cmd *cobra.Command, args []string) {
-			metrics.Send(parent, teamsName)
-		},
+	cmd := commandutil.NewCommand(commandutil.CommandConfig{
+		Use:    teamsName + " ORGANIZATION",
+		Short:  "List all the teams in an organization",
+		Args:   cli.ExactArgs(1),
+		Parent: parent,
+		Name:   teamsName,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runTeams(streams, hubClient, opts, args[0])
 		},
-	}
+	})
 	opts.AddFormatFlag(cmd.Flags())
 	return cmd
 }
@@ -78,25 +63,5 @@ func runTeams(streams command.Streams, hubClient *hub.Client, opts teamsOptions,
 	if err != nil {
 		return err
 	}
-	return opts.Print(streams.Out(), teams, printTeams)
-}
-
-func printTeams(out io.Writer, values interface{}) error {
-	teams := values.([]hub.Team)
-	tw := tabwriter.New(out, "    ")
-
-	for _, column := range teamsColumns {
-		tw.Column(ansi.Header(column.header), len(column.header))
-	}
-
-	tw.Line()
-	for _, team := range teams {
-		for _, column := range teamsColumns {
-			value, width := column.value(team)
-			tw.Column(value, width)
-		}
-		tw.Line()
-	}
-
-	return tw.Flush()
+	return opts.Print(streams.Out(), teams, commandutil.PrettyTable(teamsColumns))
 }

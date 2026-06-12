@@ -18,13 +18,11 @@ package hub
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/url"
 	"sort"
-	"time"
+	"sync"
 
+	hubapi "github.com/docker/hub-tool/pkg/hub/api"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -37,25 +35,25 @@ const (
 
 // Organization represents a Docker Hub organization
 type Organization struct {
-	Namespace string
-	FullName  string
-	Role      string
-	Teams     []Team
-	Members   []Member
+	Namespace    string
+	FullName     string
+	Role         string
+	Repositories int
+	PublicRepos  int
+	PrivateRepos int
+	Repos        []Repository
+	Teams        []Team
+	Members      []Member
 }
 
 // GetOrganizations lists all the organizations a user has joined
 func (c *Client) GetOrganizations(ctx context.Context) ([]Organization, error) {
-	u, err := url.Parse(c.domain + OrganizationsURL)
+	rawURL, err := paginatedURL(c.domain+OrganizationsURL, itemsPerPage)
 	if err != nil {
 		return nil, err
 	}
-	q := url.Values{}
-	q.Add("page_size", fmt.Sprintf("%v", itemsPerPage))
-	q.Add("page", "1")
-	u.RawQuery = q.Encode()
 
-	organizations, next, err := c.getOrganizationsPage(ctx, u.String())
+	organizations, next, err := c.getOrganizationsPage(ctx, rawURL)
 	if err != nil {
 		return nil, err
 	}
@@ -74,80 +72,86 @@ func (c *Client) GetOrganizations(ctx context.Context) ([]Organization, error) {
 
 // GetOrganizationInfo returns organization info
 func (c *Client) GetOrganizationInfo(orgname string) (*Account, error) {
-	u, err := url.Parse(c.domain + fmt.Sprintf(OrganizationInfoURL, orgname))
-	if err != nil {
-		return nil, err
-	}
-	req, err := http.NewRequest("GET", u.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-	response, err := c.doRequest(req, withHubToken(c.token))
-	if err != nil {
-		return nil, err
-	}
-	var hubResponse hubOrgInfoResponse
-	if err := json.Unmarshal(response, &hubResponse); err != nil {
+	var hubResponse hubapi.UserOrg
+	if err := c.getJSON(c.domain+fmt.Sprintf(OrganizationInfoURL, orgname), &hubResponse); err != nil {
 		return nil, err
 	}
 
 	return &Account{
-		ID:       hubResponse.ID,
-		Name:     hubResponse.OrgName,
-		FullName: hubResponse.FullName,
-		Location: hubResponse.Location,
-		Company:  hubResponse.Company,
-		Joined:   hubResponse.DateJoined,
+		ID:         ptrValue(hubResponse.Id),
+		Name:       ptrValue(hubResponse.Orgname),
+		FullName:   ptrValue(hubResponse.FullName),
+		Location:   ptrValue(hubResponse.Location),
+		Company:    ptrValue(hubResponse.Company),
+		Joined:     ptrValue(hubResponse.DateJoined),
+		Type:       ptrValue(hubResponse.Type),
+		ProfileURL: ptrValue(hubResponse.ProfileUrl),
 	}, nil
 }
 
 func (c *Client) getOrganizationsPage(ctx context.Context, url string) ([]Organization, string, error) {
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
+	var hubResponse hubapi.UserOrgPaginated
+	if err := c.getJSONContext(ctx, url, &hubResponse); err != nil {
 		return nil, "", err
 	}
-	req = req.WithContext(ctx)
-	response, err := c.doRequest(req, withHubToken(c.token))
-	if err != nil {
-		return nil, "", err
-	}
-	var hubResponse hubOrganizationResponse
-	if err := json.Unmarshal(response, &hubResponse); err != nil {
-		return nil, "", err
+	if hubResponse.Results == nil {
+		return nil, ptrValue(hubResponse.Next), nil
 	}
 
 	var organizations []Organization
+	var mu sync.Mutex
 	eg, _ := errgroup.WithContext(ctx)
 
-	for _, result := range hubResponse.Results {
+	for _, result := range *hubResponse.Results {
 		result := result
 		eg.Go(func() error {
+			orgName := ptrValue(result.Orgname)
 			var (
-				teams   []Team
-				members []Member
+				teams        []Team
+				members      []Member
+				repos        []Repository
+				repositories int
+				privateRepos int
 			)
 			subeg, _ := errgroup.WithContext(ctx)
 
 			subeg.Go(func() error {
-				teams, err = c.GetTeams(result.OrgName)
+				var err error
+				teams, err = c.GetTeams(orgName)
 				return err
 			})
 			subeg.Go(func() error {
-				members, err = c.GetMembers(result.OrgName)
+				var err error
+				members, err = c.GetMembers(orgName)
 				return err
+			})
+			subeg.Go(func() error {
+				var err error
+				repos, repositories, err = c.GetAllRepositories(orgName)
+				if err != nil {
+					return err
+				}
+				privateRepos = countPrivateRepositories(repos)
+				return nil
 			})
 
 			if err := subeg.Wait(); err != nil {
 				return err
 			}
 			organization := Organization{
-				Namespace: result.OrgName,
-				FullName:  result.FullName,
-				Role:      getRole(teams),
-				Teams:     teams,
-				Members:   members,
+				Namespace:    orgName,
+				FullName:     ptrValue(result.FullName),
+				Role:         getRole(teams),
+				Repositories: repositories,
+				PublicRepos:  repositories - privateRepos,
+				PrivateRepos: privateRepos,
+				Repos:        repos,
+				Teams:        teams,
+				Members:      members,
 			}
+			mu.Lock()
 			organizations = append(organizations, organization)
+			mu.Unlock()
 
 			return nil
 		})
@@ -160,7 +164,7 @@ func (c *Client) getOrganizationsPage(ctx context.Context, url string) ([]Organi
 	sort.Slice(organizations, func(i, j int) bool {
 		return organizations[i].Namespace < organizations[j].Namespace
 	})
-	return organizations, hubResponse.Next, nil
+	return organizations, ptrValue(hubResponse.Next), nil
 }
 
 func getRole(teams []Team) string {
@@ -170,37 +174,4 @@ func getRole(teams []Team) string {
 		}
 	}
 	return "Member"
-}
-
-type hubOrganizationResponse struct {
-	Count    int                     `json:"count"`
-	Next     string                  `json:"next,omitempty"`
-	Previous string                  `json:"previous,omitempty"`
-	Results  []hubOrganizationResult `json:"results,omitempty"`
-}
-
-type hubOrganizationResult struct {
-	OrgName       string    `json:"orgname"`
-	FullName      string    `json:"full_name"`
-	Company       string    `json:"company"`
-	Location      string    `json:"location"`
-	Type          string    `json:"type"`
-	DateJoined    time.Time `json:"date_joined"`
-	GravatarEmail string    `json:"gravatar_email"`
-	GravatarURL   string    `json:"gravatar_url"`
-	ProfileURL    string    `json:"profile_url"`
-	ID            string    `json:"id"`
-}
-
-type hubOrgInfoResponse struct {
-	ID            string    `json:"id"`
-	OrgName       string    `json:"orgname"`
-	FullName      string    `json:"full_name"`
-	Location      string    `json:"location"`
-	Company       string    `json:"company"`
-	GravatarEmail string    `json:"gravatar_email"`
-	GravatarURL   string    `json:"gravatar_url"`
-	ProfileURL    string    `json:"profile_url"`
-	DateJoined    time.Time `json:"date_joined"`
-	Type          string    `json:"type"`
 }

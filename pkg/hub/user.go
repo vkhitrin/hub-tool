@@ -17,10 +17,9 @@
 package hub
 
 import (
-	"encoding/json"
-	"net/http"
-	"net/url"
 	"time"
+
+	hubapi "github.com/docker/hub-tool/pkg/hub/api"
 )
 
 const (
@@ -30,53 +29,34 @@ const (
 
 // Account represents a user or organization information
 type Account struct {
-	ID       string
-	Name     string
-	FullName string
-	Location string
-	Company  string
-	Joined   time.Time
+	ID         string
+	Name       string
+	FullName   string
+	Location   string
+	Company    string
+	Joined     time.Time
+	Type       string
+	ProfileURL string
 }
 
 // GetUserInfo returns the information on the user retrieved from Hub
 func (c *Client) GetUserInfo() (*Account, error) {
-	u, err := url.Parse(c.domain + UserURL)
-	if err != nil {
+	var hubResponse hubapi.User
+	if err := c.getJSON(c.domain+UserURL, &hubResponse); err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest("GET", u.String(), nil)
+	joined, err := parseAPITime(ptrValue(hubResponse.DateJoined))
 	if err != nil {
-		return nil, err
-	}
-	response, err := c.doRequest(req, withHubToken(c.token))
-	if err != nil {
-		return nil, err
-	}
-	var hubResponse hubUserResponse
-	if err := json.Unmarshal(response, &hubResponse); err != nil {
 		return nil, err
 	}
 	return &Account{
-		ID:       hubResponse.ID,
-		Name:     hubResponse.UserName,
-		FullName: hubResponse.FullName,
-		Location: hubResponse.Location,
-		Company:  hubResponse.Company,
-		Joined:   hubResponse.DateJoined,
+		ID:         ptrValue(hubResponse.Id),
+		Name:       ptrValue(hubResponse.Username),
+		FullName:   ptrValue(hubResponse.FullName),
+		Location:   ptrValue(hubResponse.Location),
+		Company:    ptrValue(hubResponse.Company),
+		Joined:     joined,
+		Type:       string(ptrValue(hubResponse.Type)),
+		ProfileURL: ptrValue(hubResponse.ProfileUrl),
 	}, nil
-}
-
-type hubUserResponse struct {
-	ID            string    `json:"id"`
-	UserName      string    `json:"username"`
-	FullName      string    `json:"full_name"`
-	Location      string    `json:"location"`
-	Company       string    `json:"company"`
-	GravatarEmail string    `json:"gravatar_email"`
-	GravatarURL   string    `json:"gravatar_url"`
-	IsStaff       bool      `json:"is_staff"`
-	IsAdmin       bool      `json:"is_admin"`
-	ProfileURL    string    `json:"profile_url"`
-	DateJoined    time.Time `json:"date_joined"`
-	Type          string    `json:"type"`
 }

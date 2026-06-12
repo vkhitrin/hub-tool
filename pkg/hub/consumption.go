@@ -25,6 +25,7 @@ import (
 // Consumption represents current user or org consumption
 type Consumption struct {
 	Seats               int
+	Repositories        int
 	PrivateRepositories int
 	Teams               int
 }
@@ -33,6 +34,7 @@ type Consumption struct {
 func (c *Client) GetOrgConsumption(org string) (*Consumption, error) {
 	var (
 		members      int
+		repositories int
 		privateRepos int
 		teams        int
 	)
@@ -55,15 +57,12 @@ func (c *Client) GetOrgConsumption(org string) (*Consumption, error) {
 		return nil
 	})
 	eg.Go(func() error {
-		repos, _, err := c.GetRepositories(org)
+		total, private, err := c.GetRepositoryStats(org)
 		if err != nil {
 			return err
 		}
-		for _, r := range repos {
-			if r.IsPrivate {
-				privateRepos++
-			}
-		}
+		repositories = total
+		privateRepos = private
 		return nil
 	})
 
@@ -73,6 +72,7 @@ func (c *Client) GetOrgConsumption(org string) (*Consumption, error) {
 
 	return &Consumption{
 		Seats:               members,
+		Repositories:        repositories,
 		PrivateRepositories: privateRepos,
 		Teams:               teams,
 	}, nil
@@ -81,18 +81,13 @@ func (c *Client) GetOrgConsumption(org string) (*Consumption, error) {
 // GetUserConsumption return the current user consumption
 func (c *Client) GetUserConsumption(user string) (*Consumption, error) {
 	c.fetchAllElements = true
-	privateRepos := 0
-	repos, _, err := c.GetRepositories(user)
+	repositories, privateRepos, err := c.GetRepositoryStats(user)
 	if err != nil {
 		return nil, err
 	}
-	for _, r := range repos {
-		if r.IsPrivate {
-			privateRepos++
-		}
-	}
 	return &Consumption{
 		Seats:               1,
+		Repositories:        repositories,
 		PrivateRepositories: privateRepos,
 		Teams:               0,
 	}, nil
