@@ -28,6 +28,7 @@ import (
 	"github.com/docker/hub-tool/internal"
 	"github.com/docker/hub-tool/internal/ansi"
 	"github.com/docker/hub-tool/internal/commands/account"
+	"github.com/docker/hub-tool/internal/commands/audit"
 	"github.com/docker/hub-tool/internal/commands/org"
 	"github.com/docker/hub-tool/internal/commands/repo"
 	"github.com/docker/hub-tool/internal/commands/tag"
@@ -109,6 +110,7 @@ Please login to Docker Hub using the "hub-tool login" command.`))
 		newLoginCmd(streams, store, hubClient),
 		newLogoutCmd(streams, store),
 		account.NewAccountCmd(streams, hubClient),
+		audit.NewAuditCmd(streams, hubClient),
 		token.NewTokenCmd(streams, hubClient),
 		org.NewOrgCmd(streams, hubClient),
 		repo.NewRepoCmd(streams, hubClient),

@@ -10,7 +10,14 @@ root = File.expand_path("..", __dir__)
 source = ENV.fetch("HUB_OPENAPI_SPEC_URL", "https://docs.docker.com/reference/api/hub/latest.yaml")
 config = File.join(root, "oapi-codegen.yaml")
 
-spec = URI.open(source) { |io| YAML.safe_load(io.read, aliases: true) }
+source_data = if source.start_with?("file://")
+	File.read(URI(source).path)
+elsif File.file?(source)
+	File.read(source)
+else
+	URI.open(source) { |io| io.read }
+end
+spec = YAML.safe_load(source_data, aliases: true)
 
 def normalize_schema_required(value)
   case value
@@ -128,6 +135,11 @@ Dir.mktmpdir("hub-tool-openapi-") do |dir|
 		PostUsersLoginSuccessResponse
 		Users2FALoginRequest
 		UsersLoginRequest
+		AuditLog
+		AuditLogAction
+		AuditLogActions
+		GetAuditActionsResponse
+		GetAuditLogsResponse
 		accessToken
 		createAccessTokenRequest
 		createAccessTokensResponse

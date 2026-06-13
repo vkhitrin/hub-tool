@@ -17,6 +17,7 @@ NULL:=/dev/null
 PKG_NAME:=github.com/docker/hub-tool
 STATIC_FLAGS:=CGO_ENABLED=0
 GOLANGCI_LINT_CACHE?=$(CURDIR)/.cache/golangci-lint
+GOCACHE?=$(CURDIR)/.cache/go-build
 UNIX_PLATFORMS:=linux/amd64 linux/arm linux/arm64 darwin/amd64 darwin/arm64
 TMPDIR_WIN_PKG := $(shell mktemp -d)
 
@@ -94,8 +95,8 @@ test-unit: ## Run unit tests
 
 .PHONY: lint
 lint: ## Run the go linter
-	mkdir -p $(GOLANGCI_LINT_CACHE)
-	GOLANGCI_LINT_CACHE=$(GOLANGCI_LINT_CACHE) $(STATIC_FLAGS) golangci-lint run --timeout 10m ./...
+	mkdir -p $(GOLANGCI_LINT_CACHE) $(GOCACHE)
+	GOLANGCI_LINT_CACHE=$(GOLANGCI_LINT_CACHE) GOCACHE=$(GOCACHE) $(STATIC_FLAGS) golangci-lint run --timeout 10m ./...
 
 .PHONY: validate-go-mod
 validate-go-mod: ## Validate go.mod and go.sum are up-to-date

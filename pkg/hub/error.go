@@ -18,6 +18,20 @@ package hub
 
 import "fmt"
 
+// StatusError is returned when the Hub API responds with a non-success status.
+type StatusError struct {
+	StatusCode int
+	Status     string
+	Message    string
+}
+
+func (s *StatusError) Error() string {
+	if s.Message != "" {
+		return fmt.Sprintf("bad status code %q: %s", s.Status, s.Message)
+	}
+	return fmt.Sprintf("bad status code %q", s.Status)
+}
+
 type authenticationError struct {
 }
 

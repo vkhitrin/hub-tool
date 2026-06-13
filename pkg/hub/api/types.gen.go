@@ -50,6 +50,50 @@ const (
 	UserTypeUser UserType = "User"
 )
 
+// AuditLog Audit log event.
+type AuditLog struct {
+	Account           *string            `json:"account,omitempty"`
+	Action            *string            `json:"action,omitempty"`
+	ActionDescription *string            `json:"action_description,omitempty"`
+	Actor             *string            `json:"actor,omitempty"`
+	Data              *map[string]string `json:"data,omitempty"`
+	Name              *string            `json:"name,omitempty"`
+	Timestamp         *time.Time         `json:"timestamp,omitempty"`
+}
+
+// AuditLogAction Audit Log action
+type AuditLogAction struct {
+	// Description Description of audit log action.
+	Description *string `json:"description,omitempty"`
+
+	// Label Label for audit log action.
+	Label *string `json:"label,omitempty"`
+
+	// Name Name of audit log action.
+	Name *string `json:"name,omitempty"`
+}
+
+// AuditLogActions defines model for AuditLogActions.
+type AuditLogActions struct {
+	// Actions List of audit log actions.
+	Actions *[]AuditLogAction `json:"actions,omitempty"`
+
+	// Label Grouping label for a particular set of audit log actions.
+	Label *string `json:"label,omitempty"`
+}
+
+// GetAuditActionsResponse GetAuditActions response.
+type GetAuditActionsResponse struct {
+	// Actions Map of audit log actions.
+	Actions *map[string]AuditLogActions `json:"actions,omitempty"`
+}
+
+// GetAuditLogsResponse GetAuditLogs response.
+type GetAuditLogsResponse struct {
+	// Logs List of audit log events.
+	Logs *[]AuditLog `json:"logs,omitempty"`
+}
+
 // PostUsers2FALoginErrorResponse failed second factor login response.
 type PostUsers2FALoginErrorResponse struct {
 	// Detail Description of the error.

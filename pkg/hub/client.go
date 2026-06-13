@@ -82,13 +82,13 @@ func (c *Client) getJSON(rawURL string, target interface{}) error {
 	return c.getJSONContext(context.Background(), rawURL, target)
 }
 
-func (c *Client) getJSONContext(ctx context.Context, rawURL string, target interface{}, reqOps ...RequestOp) error {
+func (c *Client) getJSONContext(ctx context.Context, rawURL string, target interface{}) error {
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
 		return err
 	}
 	req = req.WithContext(ctx)
-	response, err := c.doRequest(req, append(reqOps, withHubToken(c.token))...)
+	response, err := c.doRequest(req, withHubToken(c.token))
 	if err != nil {
 		return err
 	}
@@ -332,11 +332,11 @@ func (c *Client) doRequest(req *http.Request, reqOps ...RequestOp) ([]byte, erro
 		buf, err := io.ReadAll(resp.Body)
 		log.Debugf("bad status code %q: %s", resp.Status, buf)
 		if err == nil {
-			if ok, err := extractError(buf, resp); ok {
-				return nil, err
+			if ok, message := extractErrorMessage(buf); ok {
+				return nil, &StatusError{StatusCode: resp.StatusCode, Status: resp.Status, Message: message}
 			}
 		}
-		return nil, fmt.Errorf("bad status code %q", resp.Status)
+		return nil, &StatusError{StatusCode: resp.StatusCode, Status: resp.Status}
 	}
 	buf, err := io.ReadAll(resp.Body)
 	log.Tracef("HTTP response body: %s", buf)
@@ -375,13 +375,20 @@ func (c *Client) doRawRequest(req *http.Request, reqOps ...RequestOp) (*http.Res
 }
 
 func extractError(buf []byte, resp *http.Response) (bool, error) {
-	var responseBody map[string]string
+	if ok, msg := extractErrorMessage(buf); ok {
+		return true, &StatusError{StatusCode: resp.StatusCode, Status: resp.Status, Message: msg}
+	}
+	return false, nil
+}
+
+func extractErrorMessage(buf []byte) (bool, string) {
+	var responseBody map[string]interface{}
 	if err := json.Unmarshal(buf, &responseBody); err == nil {
 		for _, k := range []string{"message", "detail"} {
 			if msg, ok := responseBody[k]; ok {
-				return true, fmt.Errorf("failed to authenticate: bad status code %q: %s", resp.Status, msg)
+				return true, fmt.Sprint(msg)
 			}
 		}
 	}
-	return false, nil
+	return false, ""
 }
