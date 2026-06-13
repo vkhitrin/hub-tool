@@ -33,6 +33,7 @@ func NewOrgCmd(streams command.Streams, hubClient *hub.Client) *cobra.Command {
 	cmd := commandutil.NewParentCommand(streams, orgName, "Manage organizations", nil)
 	cmd.AddCommand(
 		newListCmd(streams, hubClient, orgName),
+		newInvitesCmd(streams, hubClient),
 		newMembersCmd(streams, hubClient, orgName),
 		newTeamsCmd(streams, hubClient, orgName),
 	)

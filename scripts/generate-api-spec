@@ -141,12 +141,14 @@ Dir.mktmpdir("hub-tool-openapi-") do |dir|
 		GetAuditActionsResponse
 		GetAuditLogsResponse
 		accessToken
+		bulk_invite
 		createAccessTokenRequest
 		createAccessTokensResponse
 		getAccessTokensResponse
 		group_member
 		hub_plan
 		image
+		invite
 		list_repositories_response
 		org_group
 		org_group_paginated

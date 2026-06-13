@@ -153,6 +153,20 @@ type AccessToken struct {
 	Uuid        *string    `json:"uuid,omitempty"`
 }
 
+// BulkInviteRequest defines model for bulk_invite.
+type BulkInviteRequest struct {
+	// Invitees A list of invitees
+	Invitees *[]struct {
+		Invite *Invite `json:"invite,omitempty"`
+
+		// Invitee invitee email or Docker ID
+		Invitee *string `json:"invitee,omitempty"`
+
+		// Status status of the invite or validation error
+		Status *string `json:"status,omitempty"`
+	} `json:"invitees,omitempty"`
+}
+
 // Category Repository category for classification and discovery
 type Category struct {
 	// Name Human-readable name of the category
@@ -266,6 +280,24 @@ type ImmutableTagsSettings struct {
 
 	// Rules List of immutable tag rules
 	Rules []string `json:"rules"`
+}
+
+// Invite defines model for invite.
+type Invite struct {
+	CreatedAt *string `json:"created_at,omitempty"`
+
+	// Id uuid representing the invite id
+	Id *string `json:"id,omitempty"`
+
+	// Invitee can either be a dockerID for registered users or an email for non-registered users
+	Invitee         *string `json:"invitee,omitempty"`
+	InviterUsername *string `json:"inviter_username,omitempty"`
+
+	// Org name of the org to join
+	Org *string `json:"org,omitempty"`
+
+	// Team name of the team (user group) to join
+	Team *string `json:"team,omitempty"`
 }
 
 // Layer defines model for layer.

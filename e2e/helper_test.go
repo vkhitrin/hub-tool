@@ -47,7 +47,7 @@ func hubToolCmd(t *testing.T, args ...string) (icmd.Cmd, func()) {
 	assert.NilError(t, err)
 	hubTool := os.Getenv("BINARY")
 	configDir := fs.NewDir(t, t.Name(), fs.WithFile("config.json", string(data)))
-	t.Setenv("PATH", os.Getenv("PATH")+getPathSeparator()+filepath.Join(pwd, "..", "bin"))
+	t.Setenv("PATH", filepath.Join(pwd, "..", "bin")+getPathSeparator()+os.Getenv("PATH"))
 	env := append(os.Environ(), "DOCKER_CONFIG="+configDir.Path())
 
 	return icmd.Cmd{Command: append([]string{hubTool}, args...), Env: env}, func() { configDir.Remove() }
