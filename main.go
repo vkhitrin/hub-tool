@@ -22,6 +22,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/docker/cli/cli/command"
@@ -53,7 +54,10 @@ func main() {
 	})
 	auth, err := store.GetAuth()
 	if err != nil {
-		log.Fatal(err)
+		if !commands.IsAnonymousCommand(os.Args[1:]) {
+			log.Fatal(err)
+		}
+		auth = &credentials.Auth{}
 	}
 
 	hubClient, err := hub.NewClient(
@@ -68,7 +72,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	rootCmd := commands.NewRootCmd(dockerCli, hubClient, store, os.Args[0])
+	rootCmd := commands.NewRootCmd(dockerCli, hubClient, store, filepath.Base(os.Args[0]))
 	if err := rootCmd.ExecuteContext(ctx); err != nil {
 		os.Exit(1)
 	}

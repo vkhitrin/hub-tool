@@ -45,8 +45,18 @@ type options struct {
 }
 
 var (
-	anonCmds = []string{"version", "help", "login", "logout"}
+	anonCmds = []string{"version", "help", "login", "logout", "completion", cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd}
 )
+
+// IsAnonymousCommand returns true if args identify a command that can run without authentication.
+func IsAnonymousCommand(args []string) bool {
+	for _, arg := range args {
+		if contains(anonCmds, arg) {
+			return true
+		}
+	}
+	return false
+}
 
 // NewRootCmd returns the main command
 func NewRootCmd(streams command.Streams, hubClient *hub.Client, store credentials.Store, name string) *cobra.Command {
@@ -67,7 +77,7 @@ func NewRootCmd(streams command.Streams, hubClient *hub.Client, store credential
 			if flags.showVersion {
 				return nil
 			}
-			if contains(anonCmds, cmd.Name()) {
+			if isAnonymousCommand(cmd) {
 				return nil
 			}
 
@@ -118,6 +128,15 @@ Please login to Docker Hub using the "hub-tool login" command.`))
 		newVersionCmd(streams),
 	)
 	return cmd
+}
+
+func isAnonymousCommand(cmd *cobra.Command) bool {
+	for ; cmd != nil; cmd = cmd.Parent() {
+		if IsAnonymousCommand([]string{cmd.Name()}) {
+			return true
+		}
+	}
+	return false
 }
 
 func contains(haystack []string, needle string) bool {
